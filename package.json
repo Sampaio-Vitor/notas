@@ -1,0 +1,19 @@
+{
+  "name": "notas",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.mjs",
+    "dev": "node --watch --env-file-if-exists=.env server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check server.mjs && node --check public/app.js && node --check public/model.js && node --check public/sw.js && node --check public/navigation.js",
+    "vendor": "node scripts/vendor.mjs"
+  },
+  "dependencies": {
+    "framework7": "9.2.0"
+  }
+}
