@@ -10,6 +10,8 @@ services:
       APP_USERS: ${APP_USERS:-}
       # Alternativa com uma pessoa só.
       APP_PASSWORD: ${APP_PASSWORD:-}
+      # Agentes no /mcp, só com a lista de compras: id:token, separados por vírgula.
+      MCP_TOKENS: ${MCP_TOKENS:-}
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Defina PUBLIC_ORIGIN com o endereço HTTPS}
       TZ: America/Sao_Paulo
     healthcheck:

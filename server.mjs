@@ -3,9 +3,9 @@ import {DatabaseSync} from 'node:sqlite';
 import {mkdirSync, readFileSync, existsSync} from 'node:fs';
 import {resolve, dirname, extname} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {randomBytes, createHmac, timingSafeEqual} from 'node:crypto';
+import {randomBytes, randomUUID, createHmac, timingSafeEqual} from 'node:crypto';
 import {generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse} from '@simplewebauthn/server';
-import {initialState, apply, rollover, migrate, normalize} from './public/model.js';
+import {initialState, apply, rollover, migrate, normalize, itemKey, itemId, listed} from './public/model.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '127.0.0.1', port = Number(process.env.PORT || 4329);
@@ -116,6 +116,122 @@ setInterval(ensureDay, 30000).unref();
 // What a person sees: their own space with the shared shopping list in it.
 const viewFor = user => ({...spaces.get(user.id), shopping: spaces.get(SHARED).shopping});
 
+// Applies operations to one space in a single transaction and logs them with `who`
+// (the person, plus the agent when it came through MCP). Repeated opIds are skipped.
+function commit(ops, space, who) {
+  const fresh = ops.filter(op => !db.prepare('SELECT id FROM operations WHERE id=?').get(op.opId));
+  if (!fresh.length) return;
+  const next = structuredClone(spaces.get(space));
+  for (const op of fresh) apply(next, op);
+  db.exec('BEGIN');
+  try {
+    for (const op of fresh) db.prepare('INSERT INTO operations(id,value) VALUES (?,?)').run(op.opId, JSON.stringify({...op, ...who, space}));
+    db.prepare('INSERT OR REPLACE INTO spaces VALUES (?,?)').run(space, JSON.stringify(next));
+    db.exec('COMMIT');
+    spaces.set(space, next);
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  notify(space);
+}
+
+// ---------- MCP ----------
+// Agents (a shopping assistant) reach only the shopping list, never anyone's personal space.
+// MCP_TOKENS="lia:<token>,..."; each token is sent as "Authorization: Bearer <token>".
+const agents = (process.env.MCP_TOKENS || '').split(',').filter(e => e.trim()).map(entry => {
+  const [id, ...rest] = entry.trim().split(':'), token = rest.join(':');
+  if (!/^[a-z0-9-]+$/.test(id || '') || token.length < 24) throw Error(`MCP_TOKENS inválido em "${id}". Use id:token, com token de 24 caracteres ou mais.`);
+  return {id, token};
+});
+const agentFor = req => {
+  const token = req.headers.authorization?.match(/^Bearer (\S+)$/)?.[1];
+  return token ? agents.find(a => equal(token, a.token)) : undefined;
+};
+const MCP_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
+const itemsArg = {type: 'array', items: {type: 'string', minLength: 1, maxLength: 200}, minItems: 1, maxItems: 50};
+const porArg = {type: 'string', description: 'Id de quem pediu; o item fica com a cor dessa pessoa. Sem ele, fica no nome do agente.'};
+const MCP_TOOLS = [
+  {name: 'compras_listar', title: 'Ver a lista de compras',
+    description: 'A lista de compras da casa: o que falta comprar e o que já está no carrinho, com quem adicionou cada item.',
+    inputSchema: {type: 'object', properties: {}}, annotations: {readOnlyHint: true}},
+  {name: 'compras_adicionar', title: 'Adicionar à lista de compras',
+    description: 'Põe itens na lista de compras da casa. Um item por entrada, só o nome ("leite", "pão de forma"). Item que já está na lista não duplica.',
+    inputSchema: {type: 'object', properties: {itens: itemsArg, por: porArg}, required: ['itens']}, annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true}},
+  {name: 'compras_remover', title: 'Tirar da lista de compras',
+    description: 'Tira itens da lista de compras da casa pelo nome. Se algum não for encontrado, a resposta traz a lista atual para tentar com o nome que está nela.',
+    inputSchema: {type: 'object', properties: {itens: itemsArg}, required: ['itens']}, annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true}},
+];
+const MCP_INSTRUCTIONS = 'Lista de compras compartilhada da casa, a mesma do app Notas. Acentos e maiúsculas não importam nos nomes.';
+
+const shoppingList = () => listed(spaces.get(SHARED)).sort((a, b) => (a.added || 0) - (b.added || 0))
+  .map(i => ({nome: i.text, por: userById(i.by)?.name || i.by || '', carrinho: !!i.done}));
+function itemsFrom(args) {
+  const items = args.itens;
+  if (!Array.isArray(items) || !items.length || items.length > 50 || !items.every(t => typeof t === 'string' && t.trim() && t.length <= 200)) throw Error('itens deve ser uma lista de 1 a 50 nomes');
+  // Same name twice in one call counts once, with the first spelling.
+  const unique = new Map();
+  for (const t of items) if (!unique.has(itemKey(t))) unique.set(itemKey(t), t.trim().replace(/\s+/g, ' '));
+  return [...unique.values()];
+}
+const capitalized = t => t.charAt(0).toLocaleUpperCase('pt-BR') + t.slice(1);
+
+function callTool(agent, name, args = {}) {
+  const shopping = spaces.get(SHARED).shopping;
+  const current = id => (shopping[id] && !shopping[id].deleted && shopping[id].listed !== false) ? shopping[id] : null;
+  const op = (id, patch) => ({opId: `mcp-${randomUUID()}`, collection: 'shopping', id, patch});
+  if (name === 'compras_listar') return {itens: shoppingList()};
+  if (name === 'compras_adicionar') {
+    const items = itemsFrom(args);
+    if (args.por !== undefined && !userById(String(args.por))) throw Error(`por deve ser um destes: ${users.map(u => u.id).join(', ')}`);
+    const by = args.por !== undefined ? String(args.por) : agent.id;
+    const added = [], already = [], ops = [];
+    for (const text of items) {
+      const id = itemId(text), item = current(id);
+      if (item) { already.push(item.done ? `${item.text} (no carrinho)` : item.text); continue; }
+      const label = capitalized(text);
+      ops.push(op(id, {text: label, done: false, listed: true, added: Date.now(), by}));
+      added.push(label);
+    }
+    commit(ops, SHARED, {user: by, agent: agent.id});
+    return {adicionados: added, ja_estavam: already};
+  }
+  if (name === 'compras_remover') {
+    const removed = [], missing = [], ops = [];
+    for (const text of itemsFrom(args)) {
+      const id = itemId(text), item = current(id);
+      if (!item) { missing.push(text); continue; }
+      ops.push(op(id, {listed: false, done: false}));
+      removed.push(item.text);
+    }
+    commit(ops, SHARED, {user: agent.id, agent: agent.id});
+    return {removidos: removed, nao_encontrados: missing, ...(missing.length ? {lista: shoppingList().map(i => i.nome)} : {})};
+  }
+  return null;
+}
+
+// Streamable HTTP without sessions: one JSON-RPC request in, one JSON response out.
+function mcpResponse(agent, message) {
+  const {id, method, params = {}} = message;
+  const ok = result => ({jsonrpc: '2.0', id, result});
+  const fail = (code, msg) => ({jsonrpc: '2.0', id: id ?? null, error: {code, message: msg}});
+  if (message.jsonrpc !== '2.0' || typeof method !== 'string') return fail(-32600, 'Requisição inválida');
+  if (id === undefined) return null; // notification
+  if (method === 'initialize') {
+    const asked = params.protocolVersion;
+    return ok({protocolVersion: MCP_VERSIONS.includes(asked) ? asked : MCP_VERSIONS[0], capabilities: {tools: {}}, serverInfo: {name: 'notas', version: '0.1.0'}, instructions: MCP_INSTRUCTIONS});
+  }
+  if (method === 'ping') return ok({});
+  if (method === 'tools/list') return ok({tools: MCP_TOOLS});
+  if (method === 'tools/call') {
+    if (!MCP_TOOLS.some(t => t.name === params.name)) return fail(-32602, `Tool desconhecida: ${params.name}`);
+    try {
+      const result = callTool(agent, params.name, params.arguments || {});
+      return ok({content: [{type: 'text', text: JSON.stringify(result)}], structuredContent: result, isError: false});
+    } catch (e) {
+      return ok({content: [{type: 'text', text: e.message}], isError: true});
+    }
+  }
+  return fail(-32601, `Método desconhecido: ${method}`);
+}
+
 // ---------- Validation ----------
 const schema = {
   sections: {name: 'string', order: 'number', deleted: 'boolean'},
@@ -192,6 +308,22 @@ const server = http.createServer(async (req, res) => {
       if (!limited(req)) console.error('cliente:', String((await body(req)).message || '').slice(0, 2000).replace(/\s+/g, ' '), '|', String(req.headers['user-agent'] || '').slice(0, 160));
       return json(200, {ok: true});
     }
+    // MCP for agents: bearer token instead of the session cookie.
+    if (url.pathname === '/mcp' && agents.length) {
+      const agent = agentFor(req);
+      if (!agent) {
+        if (limited(req)) return json(429, {error: 'Aguarde um minuto e tente novamente.'});
+        res.setHeader('WWW-Authenticate', 'Bearer');
+        return json(401, {error: 'Token inválido'});
+      }
+      if (req.method !== 'POST') { res.setHeader('Allow', 'POST'); return json(405, {error: 'Use POST'}); }
+      const message = await body(req).catch(() => null);
+      if (!message || typeof message !== 'object' || Array.isArray(message)) return json(400, {jsonrpc: '2.0', id: null, error: {code: -32700, message: 'JSON inválido'}});
+      const reply = mcpResponse(agent, message);
+      if (!reply) { res.writeHead(202); return res.end(); }
+      if (message.method === 'tools/call') console.log('mcp:', agent.id, message.params?.name, reply.result?.isError ? 'erro' : 'ok');
+      return json(200, reply);
+    }
     if (route('GET', '/api/login-methods')) return json(200, {passkey: protectedServer && db.prepare('SELECT COUNT(*) AS n FROM passkeys').get().n > 0, users: users.map(publicUser)});
     if (route('POST', '/api/passkey/login-options')) {
       const options = await generateAuthenticationOptions({rpID, userVerification: 'preferred'});
@@ -267,18 +399,7 @@ const server = http.createServer(async (req, res) => {
         const space = op.collection === 'shopping' ? SHARED : user.id;
         // Who added an item is decided here, not by the client.
         if (op.collection === 'shopping') { delete op.patch.by; if (op.patch.listed === true) op.patch.by = user.id; }
-        if (!db.prepare('SELECT id FROM operations WHERE id=?').get(op.opId)) {
-          const next = structuredClone(spaces.get(space));
-          apply(next, op);
-          db.exec('BEGIN');
-          try {
-            db.prepare('INSERT INTO operations(id,value) VALUES (?,?)').run(op.opId, JSON.stringify({...op, user: user.id, space}));
-            db.prepare('INSERT OR REPLACE INTO spaces VALUES (?,?)').run(space, JSON.stringify(next));
-            db.exec('COMMIT');
-            spaces.set(space, next);
-          } catch (e) { db.exec('ROLLBACK'); throw e; }
-          notify(space);
-        }
+        commit([op], space, {user: user.id});
         return json(200, {ok: true});
       }
       return json(404, {error: 'Não encontrado'});
