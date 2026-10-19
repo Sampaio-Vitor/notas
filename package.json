@@ -14,6 +14,9 @@
     "vendor": "node scripts/vendor.mjs"
   },
   "dependencies": {
+    "@simplewebauthn/server": "^13.3.3"
+  },
+  "devDependencies": {
     "framework7": "9.2.0"
   }
 }
