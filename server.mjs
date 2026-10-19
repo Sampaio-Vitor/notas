@@ -168,6 +168,14 @@ const server = http.createServer(async (req, res) => {
     return json(200, {ok: true});
   };
   try {
+    if (route('GET', '/healthz')) {
+      try {
+        db.prepare('SELECT 1 FROM spaces LIMIT 1').get();
+        return json(200, {ok: true, revision: process.env.APP_REVISION || 'dev'});
+      } catch {
+        return json(503, {ok: false});
+      }
+    }
     if (req.method === 'POST' && req.headers.origin && req.headers.origin !== (process.env.PUBLIC_ORIGIN || `http://${req.headers.host}`)) return json(403, {error: 'Origem inválida'});
 
     // Public: everything needed to sign in.

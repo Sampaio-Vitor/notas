@@ -8,6 +8,7 @@ async function launch(dir){const child=spawn(process.execPath,['server.mjs'],{en
 async function stop(child){await new Promise(resolve=>{child.once('exit',resolve);child.kill('SIGTERM')})}
 test('API: autenticação, sessão, persistência, SSE, idempotência e validação',async()=>{const dir=await mkdtemp(join(tmpdir(),'notas-test-'));let proc;try{
  proc=await launch(dir);let url=proc.url;assert.equal((await fetch(url+'/api/state')).status,401);
+ const health=await fetch(url+'/healthz');assert.equal(health.status,200);assert.equal(health.headers.get('cache-control'),'no-store');assert.deepEqual(await health.json(),{ok:true,revision:process.env.APP_REVISION||'dev'});
  assert.equal((await fetch(url+'/api/login',{method:'POST',body:JSON.stringify({password:'wrong'})})).status,401);
  async function login(){const r=await fetch(url+'/api/login',{method:'POST',body:JSON.stringify({password:'test-only-password'})});assert.equal(r.status,200);return r.headers.get('set-cookie').split(';')[0]}
  let cookie=await login();const headers=()=>({'Content-Type':'application/json',cookie});

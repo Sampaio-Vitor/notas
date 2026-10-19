@@ -869,6 +869,11 @@ document.addEventListener('pointerdown', e => { if (e.target.closest('[data-keep
 
 // ---------- Lifecycle ----------
 
+// Activate updates on the next opening; never force a reload over unsynced edits.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js', {updateViaCache: 'none'}).catch(e => console.warn('Offline:', e.message));
+}
+
 window.addEventListener('online', () => sync());
 window.addEventListener('offline', () => { online = false; render(); });
 window.addEventListener('storage', e => {

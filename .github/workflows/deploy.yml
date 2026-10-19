@@ -1,0 +1,158 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: 'Full SHA already published by this workflow (blank = current main)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# Never interrupt an active deployment. The server also holds a flock lock.
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: validate
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.release.outputs.image }}
+      revision: ${{ steps.release.outputs.revision }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Resolve release
+        id: target
+        env:
+          REQUESTED_REVISION: ${{ inputs.revision }}
+        run: |
+          revision=${REQUESTED_REVISION:-$GITHUB_SHA}
+          [[ $revision =~ ^[a-f0-9]{40}$ ]] || exit 1
+          repository="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build and publish current commit
+        id: build
+        if: inputs.revision == ''
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.target.outputs.repository }}:sha-${{ steps.target.outputs.revision }}
+          build-args: APP_REVISION=${{ steps.target.outputs.revision }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Resolve immutable digest (also for manual rollback)
+        id: release
+        env:
+          REPOSITORY: ${{ steps.target.outputs.repository }}
+          REVISION: ${{ steps.target.outputs.revision }}
+          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          digest=$BUILT_DIGEST
+          if [[ -z $digest ]]; then
+            digest=$(docker buildx imagetools inspect "$REPOSITORY:sha-$REVISION" --format '{{.Manifest.Digest}}')
+          fi
+          [[ $digest =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
+          echo "image=$REPOSITORY@$digest" >> "$GITHUB_OUTPUT"
+          echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check deployment configuration
+        env:
+          TS_CLIENT: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
+          TS_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          [[ -n $TS_CLIENT && ( -n $TS_AUDIENCE || -n $TS_SECRET ) && -n $SSH_KEY && -n $KNOWN_HOSTS ]] || {
+            echo 'Configure Tailscale and SSH secrets' >&2
+            exit 1
+          }
+      - uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:notas-ci
+          ping: ${{ vars.DEPLOY_HOST }}
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+        run: |
+          [[ $DEPLOY_HOST =~ ^[a-zA-Z0-9.-]+$ && $DEPLOY_USER =~ ^[a-z_][a-z0-9_-]*$ ]] || exit 1
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/deploy_key ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host notas-deploy
+            HostName $DEPLOY_HOST
+            User $DEPLOY_USER
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            BatchMode yes
+            ConnectTimeout 15
+            ServerAliveInterval 15
+            ServerAliveCountMax 3
+          EOF
+      - name: Upload release tools and deploy
+        env:
+          IMAGE: ${{ needs.publish.outputs.image }}
+          REVISION: ${{ needs.publish.outputs.revision }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: |
+          [[ $REVISION =~ ^[a-f0-9]{40}$ && $IMAGE =~ ^ghcr\.io/[a-z0-9_./-]+@sha256:[a-f0-9]{64}$ ]] || exit 1
+          [[ $REGISTRY_USER =~ ^[a-zA-Z0-9-]+(\[bot\])?$ ]] || exit 1
+          release="notas/.deploy/releases/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          # Values above are validated; expansion on the runner is intentional.
+          # shellcheck disable=SC2029
+          ssh notas-deploy "mkdir -p '$release' && chmod 700 '$release'"
+          scp scripts/deploy.sh compose.yaml "notas-deploy:$release/"
+          # shellcheck disable=SC2029
+          printf '%s' "$REGISTRY_TOKEN" | ssh notas-deploy "bash '$release/deploy.sh' '$IMAGE' '$REVISION' '$REGISTRY_USER'"
+          printf 'Commit: %s\n\nImage: %s\n' "$REVISION" "$IMAGE" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove SSH credentials
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
