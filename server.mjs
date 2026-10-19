@@ -158,6 +158,9 @@ const MCP_TOOLS = [
   {name: 'compras_remover', title: 'Tirar da lista de compras',
     description: 'Tira itens da lista de compras da casa pelo nome. Se algum não for encontrado, a resposta traz a lista atual para tentar com o nome que está nela.',
     inputSchema: {type: 'object', properties: {itens: itemsArg}, required: ['itens']}, annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true}},
+  {name: 'compras_sugerir', title: 'Sugerir itens já comprados',
+    description: 'Itens que já estiveram na lista e começam com o texto (acento e maiúscula não importam), os mais recentes primeiro. Para completar o que alguém está digitando.',
+    inputSchema: {type: 'object', properties: {texto: {type: 'string', minLength: 1, maxLength: 200}}, required: ['texto']}, annotations: {readOnlyHint: true}},
 ];
 const MCP_INSTRUCTIONS = 'Lista de compras compartilhada da casa, a mesma do app Notas. Acentos e maiúsculas não importam nos nomes.';
 
@@ -178,6 +181,14 @@ function callTool(agent, name, args = {}) {
   const current = id => (shopping[id] && !shopping[id].deleted && shopping[id].listed !== false) ? shopping[id] : null;
   const op = (id, patch) => ({opId: `mcp-${randomUUID()}`, collection: 'shopping', id, patch});
   if (name === 'compras_listar') return {itens: shoppingList()};
+  if (name === 'compras_sugerir') {
+    const prefix = itemKey(typeof args.texto === 'string' ? args.texto : '');
+    if (!prefix || prefix.length > 200) throw Error('texto deve ter de 1 a 200 caracteres');
+    const starts = i => itemKey(i.text).startsWith(prefix) ? 0 : itemKey(i.text).split(' ').some(w => w.startsWith(prefix)) ? 1 : null;
+    const found = Object.values(shopping).filter(i => !i.deleted && i.text && starts(i) !== null)
+      .sort((a, b) => starts(a) - starts(b) || (b.added || 0) - (a.added || 0)).slice(0, 5);
+    return {sugestoes: found.map(i => ({nome: i.text, na_lista: !!current(i.id), ultima_vez: i.added || null}))};
+  }
   if (name === 'compras_adicionar') {
     const items = itemsFrom(args);
     if (args.por !== undefined && !userById(String(args.por))) throw Error(`por deve ser um destes: ${users.map(u => u.id).join(', ')}`);

@@ -40,7 +40,7 @@ test('MCP: só compras, com token, sem duplicar, avisando os aparelhos', async (
     const notification = await fetch(url + '/mcp', {method: 'POST', headers: {Authorization: `Bearer ${TOKEN}`}, body: JSON.stringify({jsonrpc: '2.0', method: 'notifications/initialized'})});
     assert.equal(notification.status, 202);
     const tools = (await (await rpc('tools/list', {})).json()).result.tools.map(t => t.name);
-    assert.deepEqual(tools, ['compras_listar', 'compras_adicionar', 'compras_remover']);
+    assert.deepEqual(tools, ['compras_listar', 'compras_adicionar', 'compras_remover', 'compras_sugerir']);
     assert.equal((await (await rpc('metodo/inexistente', {})).json()).error.code, -32601);
 
     // A Bia escuta os avisos do app; o que a Lia põe chega nela.
@@ -78,6 +78,14 @@ test('MCP: só compras, com token, sem duplicar, avisando os aparelhos', async (
     assert.deepEqual(r.structuredContent, {removidos: ['Pão de forma'], nao_encontrados: ['leite integral'], lista: ['Leite', 'Café']});
     const after = await (await fetch(url + '/api/state', {headers: {cookie}})).json();
     assert.equal(after.shopping['i-pao de forma'].listed, false, 'remover não apaga: sai da lista, como no app');
+
+    // Sugestões: o que já esteve na lista, começando pelo texto, com o que está nela marcado.
+    r = await call('compras_sugerir', {texto: 'PAO'});
+    assert.deepEqual(r.structuredContent.sugestoes.map(s => [s.nome, s.na_lista]), [['Pão de forma', false]]);
+    assert.ok(r.structuredContent.sugestoes[0].ultima_vez > 0);
+    assert.deepEqual((await call('compras_sugerir', {texto: 'forma'})).structuredContent.sugestoes.map(s => s.nome), ['Pão de forma'], 'casa o começo de qualquer palavra');
+    assert.deepEqual((await call('compras_sugerir', {texto: 'caf'})).structuredContent.sugestoes.map(s => [s.nome, s.na_lista]), [['Café', true]]);
+    assert.equal((await call('compras_sugerir', {texto: ''})).isError, true);
 
     // Adicionar de novo volta pra lista.
     assert.deepEqual((await call('compras_adicionar', {itens: ['Pão de forma'], por: 'ana'})).structuredContent.adicionados, ['Pão de forma']);
