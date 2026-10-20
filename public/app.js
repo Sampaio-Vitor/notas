@@ -3,7 +3,7 @@ import {createNavigation} from './navigation.js';
 const report = message => { try { navigator.sendBeacon?.('/api/client-log', new Blob([JSON.stringify({message})], {type: 'application/json'})); } catch {} };
 addEventListener('error', e => report(`${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`));
 addEventListener('unhandledrejection', e => report(`promise: ${e.reason?.stack || e.reason}`));
-import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, itemKey, itemId, listed} from './model.js';
+import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills} from './model.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -43,11 +43,14 @@ const ICONS = {
   plus: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   hoje: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 12.2l2.4 2.4 4.6-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   backlog: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  reunioes: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
   contas: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5.5" width="17" height="13" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 10h17" stroke="currentColor" stroke-width="1.8"/></svg>',
   compras: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 8.5h13l-1 11a1.5 1.5 0 0 1-1.5 1.4H8a1.5 1.5 0 0 1-1.5-1.4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9 8.5V7a3 3 0 0 1 6 0v1.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
   ajustes: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h9M18 7h1M5 17h1M10 17h9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="16" cy="7" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="8" cy="17" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
 };
-const TABS = [['hoje', 'Hoje'], ['backlog', 'Backlog'], ['compras', 'Compras'], ['contas', 'Contas'], ['ajustes', 'Ajustes']];
+const TABS = [['hoje', 'Hoje'], ['reunioes', 'Reuniões'], ['backlog', 'Backlog'], ['compras', 'Compras'], ['contas', 'Contas'], ['ajustes', 'Ajustes']];
+// Hoje and Ajustes always show; the others follow this person's choices in Ajustes.
+const visibleTabs = () => { const prefs = tabPrefs(state); return TABS.filter(([id]) => !(id in prefs) || prefs[id]); };
 
 // ---------- Local state, outbox and sync ----------
 
@@ -56,7 +59,7 @@ let passkeys = [], regOptions = null, loginOptions = null;
 // Who is signed in. The local cache belongs to one person (`owner`); another
 // person signing in on the same device starts from a clean cache.
 let me = null, people = [], owner = null, sessionLoaded = false;
-let tab = 'hoje', billMonth = today().slice(0, 7), selecting = false, selected = new Set(), historyDate = null, sub = null, dragging = false;
+let tab = 'hoje', billMonth = today().slice(0, 7), selecting = false, selected = new Set(), historyDate = null, sub = null, dragging = false, billsView = 'mes', openMonths = new Set();
 
 try {
   const saved = JSON.parse(localStorage.getItem('notas-v1') || 'null');
@@ -142,6 +145,10 @@ async function sync() {
 const sections = () => sortedSections(state);
 const sectionName = id => state.sections[id]?.name || 'Sem seção';
 const tasksOn = date => live(state, 'tasks').filter(t => t.date === date);
+// With the Reuniões tab on, meetings live there and leave Hoje.
+const meetingsApart = () => tabPrefs(state).reunioes;
+const todayTasks = () => tasksOn(today()).filter(t => !(meetingsApart() && t.meeting));
+const todayMeetings = () => tasksOn(today()).filter(t => t.meeting);
 const backlog = () => live(state, 'tasks').filter(t => t.date === '');
 const byTime = list => [...list].sort((a, b) => (a.time ? 0 : 1) - (b.time ? 0 : 1) || (a.time || '').localeCompare(b.time || ''));
 const doneCount = list => list.filter(t => t.done).length;
@@ -149,6 +156,8 @@ function lastSection() {
   const id = localStorage.getItem('notas-section');
   return state.sections[id] && !state.sections[id].deleted ? id : sections()[0]?.id;
 }
+const everyLabel = n => n === 1 ? 'todo mês' : n === 12 ? 'todo ano' : `a cada ${n} meses`;
+const monthLabel = m => `${MONTHS[Number(m.slice(5, 7)) - 1]}${m.slice(0, 4) === today().slice(0, 4) ? '' : ` de ${m.slice(0, 4)}`}`;
 function repeatKind(r) {
   if (!r) return 'none';
   if (r.monthDay > 0) return 'monthly';
@@ -205,15 +214,29 @@ function orphanGroup(tasks, mode, count) {
 }
 
 function viewHoje() {
-  const tasks = tasksOn(today()), pending = lastPending(state, today());
+  const tasks = todayTasks(), pending = lastPending(state, today());
   const banner = pending ? `<div class="n-banner"><p>${pending.tasks.length === 1 ? `1 tarefa ${fromDay(pending.date)} não foi feita.` : `${pending.tasks.length} tarefas ${fromDay(pending.date)} não foram feitas.`}</p><div class="n-btns"><button class="n-btn n-yellow" data-carry-last>Trazer para hoje</button><button class="n-btn n-gray" data-ignore-last>Ignorar</button></div></div>` : '';
   const waiting = backlog().length;
   const body = tasks.length
     ? sectionGroups(tasks, 'edit', list => `${doneCount(list)} de ${list.length}`)
-    : `<div class="n-empty"><p>Nada para hoje.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-task>Nova tarefa</button>${waiting ? `<button class="n-btn n-gray" data-tab="backlog">Ver backlog (${waiting})</button>` : ''}</div></div>`;
+    : `<div class="n-empty"><p>Nada para hoje.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-task>Nova tarefa</button>${waiting && tabPrefs(state).backlog ? `<button class="n-btn n-gray" data-tab="backlog">Ver backlog (${waiting})</button>` : ''}</div></div>`;
   const avatar = me && people.length > 1 ? `<button class="n-avatar" data-tab="ajustes" style="background:${me.color}" aria-label="Conta de ${esc(me.name)}. Abrir Ajustes">${esc(me.name[0])}</button>` : '<span></span>';
   return `${statusHtml()}<div class="n-top">${avatar}<button class="n-icon" data-open-history aria-label="Dias anteriores">${ICONS.cal}</button></div>
     <h1 class="n-title">Hoje</h1><p class="n-sub">${longDate(today())}${tasks.length ? `<span class="n-sub-count">${doneCount(tasks)} de ${tasks.length} feitas</span>` : ''}</p>${banner}${body}`;
+}
+
+function viewReunioes() {
+  const now = todayMeetings(), days = Array.from({length: 6}, (_, i) => addDays(today(), i + 1));
+  const upcoming = days.map(date => {
+    const list = live(state, 'repeats').filter(r => r.meeting && repeatsOn(r, date)).sort((a, b) => (a.time || '99').localeCompare(b.time || '99'));
+    if (!list.length) return '';
+    const rows = list.map(r => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-repeat="${r.id}"><span>${esc(r.text)}</span><span class="n-meta">${esc(sectionName(r.section))}</span></button>${r.time ? `<span class="n-meta">${esc(shortTime(r.time))}</span>` : ''}</div>`).join('');
+    return `<section><div class="n-group-h"><h2>${cap(nextDayLabel(date))}</h2><span>${list.length}</span></div><div class="n-list">${rows}</div></section>`;
+  }).join('');
+  const today_ = now.length
+    ? `<section><div class="n-group-h"><h2>Hoje</h2><span>${doneCount(now)} de ${now.length}</span></div><div class="n-list">${byTime(now).map(t => taskRow(t)).join('')}</div></section>`
+    : '<div class="n-empty"><p>Nenhuma reunião hoje.</p></div>';
+  return `${statusHtml()}<div class="n-top"><span></span></div><h1 class="n-title">Reuniões</h1><p class="n-sub">${longDate(today())}</p>${today_}${upcoming}`;
 }
 
 function viewBacklog() {
@@ -227,24 +250,46 @@ function viewBacklog() {
   return `${statusHtml()}${head}${body}`;
 }
 
+function billsSegment() {
+  return `<div class="n-seg">${[['mes', 'Neste mês'], ['agendadas', 'Agendadas']].map(([id, label]) => `<button class="n-seg-b ${billsView === id ? 'is-on' : ''}" data-bills-view="${id}" aria-pressed="${billsView === id}">${label}</button>`).join('')}</div>`;
+}
+
+// Next 12 months, projected from the bills that repeat; tap a month to see its bills.
+function viewAgendadas() {
+  const months = scheduledBills(state, addMonths(today().slice(0, 7), 1), 12);
+  const head = `${statusHtml()}<div class="n-top"><span></span></div><h1 class="n-title">Contas</h1>${billsSegment()}`;
+  if (!repeatingBills(state).length) return `${head}<div class="n-empty"><p>Nenhuma conta se repete.</p><p class="n-note">Ao criar uma conta, escolha Repetir.</p></div>`;
+  const row = m => {
+    const base = m.items.filter(i => i.every === 1), extra = m.items.filter(i => i.every !== 1), open = openMonths.has(m.month);
+    const summary = m.items.length ? `${esc(base.map(i => i.text).join(', '))}${extra.map(i => ` <em>+ ${esc(i.text)}</em>`).join('')}` : 'Nada agendado';
+    const detail = open ? `<div class="n-month-items">${m.items.map(i => `<div class="n-month-item"><span>${esc(i.text)}<small>${i.due ? `Dia ${i.due}` : 'Sem dia'}${i.every > 1 ? ` · <i class="n-every">${everyLabel(i.every)}</i>` : ''}</small></span><span class="n-amount">${money(i.amount)}</span></div>`).join('')}</div>` : '';
+    return `<div class="n-month"><button class="n-month-head" data-open-month="${m.month}" aria-expanded="${open}"><span class="n-month-name">${monthName(m.month)}</span><span class="n-amount">${m.items.length ? money(m.total) : ''}</span><span class="n-month-sum">${summary}</span></button>${detail}</div>`;
+  };
+  return `${head}<p class="n-sub">Projeção a partir das contas que se repetem.</p><div class="n-list n-spaced">${months.map(row).join('')}</div><p class="n-note">Toque num mês para ver as contas e os valores.</p>`;
+}
+
 function viewContas() {
+  if (billsView === 'agendadas') return viewAgendadas();
   const current = today().slice(0, 7), prev = addMonths(billMonth, -1), next = addMonths(billMonth, 1);
   const bills = live(state, 'bills').filter(b => b.month === billMonth);
   const sortDue = list => [...list].sort((a, b) => (a.due || 99) - (b.due || 99) || a.text.localeCompare(b.text));
   const unpaid = sortDue(bills.filter(b => !b.done)), paid = sortDue(bills.filter(b => b.done));
   const left = unpaid.reduce((n, b) => n + (b.amount || 0), 0);
   const nowDay = Number(today().slice(8, 10));
+  // Due day (red when late) plus, for bills that are not monthly, how often they come back.
   const dueMeta = b => {
-    if (!b.due || b.done) return '';
-    const late = billMonth < current || (billMonth === current && b.due < nowDay);
-    return `<span class="n-meta ${late ? 'is-late' : ''}">${late ? 'Venceu' : 'Vence'} dia ${b.due}</span>`;
+    const every = b.repeat !== false ? billEvery(b) : 1;
+    const late = b.due && !b.done && (billMonth < current || (billMonth === current && b.due < nowDay));
+    const due = b.due && !b.done ? `${late ? 'Venceu' : 'Vence'} dia ${b.due}` : '';
+    if (!due && every === 1) return '';
+    return `<span class="n-meta ${late ? 'is-late' : ''}">${due}${due && every > 1 ? ' · ' : ''}${every > 1 ? `<i class="n-every">${everyLabel(every)}</i>` : ''}</span>`;
   };
   const row = b => `<div class="n-row ${b.done ? 'is-done' : ''}"><button class="n-check" data-toggle="${b.id}" data-collection="bills" aria-pressed="${!!b.done}" aria-label="${b.done ? 'Desmarcar' : 'Marcar como paga'} ${esc(b.text)}">${ICONS.check}</button><button class="n-text n-two" data-edit-bill="${b.id}"><span>${esc(b.text)}</span>${dueMeta(b)}</button><span class="n-amount">${money(b.amount)}</span></div>`;
   const top = `<div class="n-top"><button class="n-link" data-month="${prev}">‹ ${monthName(prev)}</button><span class="n-top-end">${billMonth < current ? `<button class="n-link" data-month="${next}">${monthName(next)} ›</button>` : ''}<button class="n-icon" data-new-bill aria-label="Adicionar conta">${ICONS.plus}</button></span></div>`;
   if (!bills.length) {
-    return `${statusHtml()}${top}<h1 class="n-title">${monthName(billMonth)}</h1><div class="n-empty"><p>Nenhuma conta em ${MONTHS[Number(billMonth.slice(5, 7)) - 1]}.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-bill>Adicionar conta</button></div></div>`;
+    return `${statusHtml()}${top}<h1 class="n-title">${monthName(billMonth)}</h1>${billsSegment()}<div class="n-empty"><p>Nenhuma conta em ${MONTHS[Number(billMonth.slice(5, 7)) - 1]}.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-bill>Adicionar conta</button></div></div>`;
   }
-  return `${statusHtml()}${top}<h1 class="n-title">${monthName(billMonth)}</h1>
+  return `${statusHtml()}${top}<h1 class="n-title">${monthName(billMonth)}</h1>${billsSegment()}
     <div class="n-total"><span>${left ? 'Falta pagar' : 'Tudo pago'}</span><strong>${money(left)}</strong></div>
     <div class="n-bar" role="progressbar" aria-valuemin="0" aria-valuemax="${bills.length}" aria-valuenow="${paid.length}"><span style="width:${paid.length / bills.length * 100}%"></span></div>
     <p class="n-bar-label">${paid.length} de ${bills.length} pagas</p>
@@ -295,7 +340,7 @@ function itemSheet(id) {
 
 function viewAjustes() {
   const repeats = live(state, 'repeats').length;
-  const monthly = live(state, 'bills').filter(b => b.month === today().slice(0, 7) && b.repeat !== false).length;
+  const monthly = repeatingBills(state).length;
   const account = protectedServer && me ? `<div class="n-group-h"><h2>Conta</h2></div>
     <div class="n-list"><div class="n-row n-plain"><span class="n-person-dot" style="background:${me.color}"></span><span class="n-text">${esc(me.name)}</span><button class="n-link n-danger" data-logout>Sair</button></div></div>` : '';
   return `${statusHtml()}<div class="n-top"></div><h1 class="n-title">Ajustes</h1>${account}
@@ -303,10 +348,13 @@ function viewAjustes() {
     <div class="n-list" id="section-list">${sections().map(s => `<div class="n-row n-plain" data-section-row="${s.id}"><button class="n-text" data-edit-section="${s.id}">${esc(s.name)}</button><button class="n-handle" data-drag="${s.id}" aria-label="Reordenar ${esc(s.name)}. Use as setas para mover.">≡</button></div>`).join('')}
       <div class="n-row n-plain"><button class="n-text n-accent" data-new-section>Nova seção</button></div></div>
     <p class="n-note">A ordem aqui é a ordem em Hoje e no Backlog.</p>
+    <div class="n-group-h"><h2>Abas</h2></div>
+    <div class="n-list">${[['reunioes', 'Reuniões'], ['backlog', 'Backlog'], ['compras', 'Compras'], ['contas', 'Contas']].map(([id, label]) => `<label class="n-row n-plain"><span class="n-text">${label}</span><input type="checkbox" class="n-switch" data-tab-pref="${id}" ${tabPrefs(state)[id] ? 'checked' : ''}></label>`).join('')}</div>
+    <p class="n-note">Hoje e Ajustes sempre aparecem. Com Reuniões ligada, as tarefas marcadas como reunião saem do Hoje e ficam nessa aba.</p>
     <div class="n-group-h"><h2>Repetições</h2></div>
     <div class="n-list">
       <div class="n-row n-plain"><button class="n-text" data-push="repeats">Tarefas que se repetem</button><span class="n-meta">${repeats}</span><span class="n-chev" aria-hidden="true">›</span></div>
-      <div class="n-row n-plain"><button class="n-text" data-push="monthly">Contas mensais</button><span class="n-meta">${monthly}</span><span class="n-chev" aria-hidden="true">›</span></div>
+      ${tabPrefs(state).contas ? `<div class="n-row n-plain"><button class="n-text" data-push="monthly">Contas recorrentes</button><span class="n-meta">${monthly}</span><span class="n-chev" aria-hidden="true">›</span></div>` : ''}
     </div>
     ${protectedServer ? passkeysHtml() : ''}
     <div class="n-group-h"><h2>Dados</h2></div>
@@ -353,10 +401,9 @@ function pageRepeats() {
 }
 
 function pageMonthly() {
-  const month = today().slice(0, 7);
-  const list = live(state, 'bills').filter(b => b.month === month && b.repeat !== false).sort((a, b) => (a.due || 99) - (b.due || 99));
-  const rows = list.map(b => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-bill="${b.id}"><span>${esc(b.text)}</span>${b.due ? `<span class="n-meta">Dia ${b.due}</span>` : ''}</button><span class="n-amount">${money(b.amount)}</span></div>`).join('');
-  return {html: `<div class="n-top"><button class="n-link" data-back>‹ Ajustes</button></div><h1 class="n-title">Contas mensais</h1><p class="n-sub">Voltam todo mês como não pagas.</p>${rows ? `<div class="n-list n-spaced">${rows}</div>` : '<div class="n-empty"><p>Nenhuma conta mensal.</p></div>'}`, action: ''};
+  const list = repeatingBills(state).sort((a, b) => billEvery(a) - billEvery(b) || (a.due || 99) - (b.due || 99) || a.text.localeCompare(b.text, 'pt-BR'));
+  const rows = list.map(b => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-bill="${b.id}"><span>${esc(b.text)}</span><span class="n-meta">${b.due ? `Dia ${b.due} · ` : ''}${everyLabel(billEvery(b))}</span></button><span class="n-amount">${money(b.amount)}</span></div>`).join('');
+  return {html: `<div class="n-top"><button class="n-link" data-back>‹ Ajustes</button></div><h1 class="n-title">Contas recorrentes</h1><p class="n-sub">Voltam no ritmo de cada uma, como não pagas.</p>${rows ? `<div class="n-list n-spaced">${rows}</div>` : '<div class="n-empty"><p>Nenhuma conta se repete.</p></div>'}`, action: ''};
 }
 
 const PAGES = {history: pageHistory, repeats: pageRepeats, monthly: pageMonthly};
@@ -364,14 +411,17 @@ const PAGES = {history: pageHistory, repeats: pageRepeats, monthly: pageMonthly}
 function render() {
   if (dragging) return;
   const screen = $('.page[data-name="root"] .n-screen');
+  // A tab turned off (here or on another device) cannot stay selected.
+  if (!visibleTabs().some(([id]) => id === tab)) tab = 'hoje';
   // Re-rendering replaces the add field; keep what is being typed and the keyboard open.
   const field = $('#add-item input'), typing = field && {value: field.value, focused: document.activeElement === field};
-  if (screen) screen.innerHTML = {hoje: viewHoje, backlog: viewBacklog, compras: viewCompras, contas: viewContas, ajustes: viewAjustes}[tab]();
+  if (screen) screen.innerHTML = {hoje: viewHoje, reunioes: viewReunioes, backlog: viewBacklog, compras: viewCompras, contas: viewContas, ajustes: viewAjustes}[tab]();
   if (typing && $('#add-item input')) { $('#add-item input').value = typing.value; if (typing.focused) $('#add-item input').focus({preventScroll: true}); }
-  $('#tabbar').innerHTML = TABS.map(([id, label]) => `<button class="n-tab ${tab === id ? 'is-on' : ''}" data-tab="${id}" ${tab === id ? 'aria-current="page"' : ''}>${ICONS[id]}<span>${label}</span></button>`).join('');
+  $('#tabbar').innerHTML = visibleTabs().map(([id, label]) => `<button class="n-tab ${tab === id ? 'is-on' : ''}" data-tab="${id}" ${tab === id ? 'aria-current="page"' : ''}>${ICONS[id]}<span>${label}</span></button>`).join('');
   let float = '';
   if (tab === 'backlog' && selecting) float = `<button class="n-btn n-yellow n-wide" data-move-selected ${selected.size ? '' : 'disabled'}>${selected.size ? `Mover ${selected.size} para hoje` : 'Selecione tarefas'}</button>`;
-  else if ((tab === 'hoje' && tasksOn(today()).length) || (tab === 'backlog' && backlog().length)) float = `<button class="n-quick" data-new-task>${ICONS.plus}<span>Nova tarefa</span></button>`;
+  else if (tab === 'reunioes') float = `<button class="n-quick" data-new-meeting>${ICONS.plus}<span>Nova reunião</span></button>`;
+  else if ((tab === 'hoje' && todayTasks().length) || (tab === 'backlog' && backlog().length)) float = `<button class="n-quick" data-new-task>${ICONS.plus}<span>Nova tarefa</span></button>`;
   $('#float').innerHTML = float;
   document.body.dataset.float = float ? 'yes' : 'no';
   if (sub && document.contains(sub.el)) {
@@ -396,21 +446,36 @@ function openSheet(html, ready) {
   $('#sheet-content').innerHTML = html;
   const dialog = $('#sheet');
   if (!dialog.open) dialog.showModal();
+  fitSheet();
   ready?.(dialog);
 }
+// On iOS the keyboard shrinks only the visual viewport; the sheet is anchored to the
+// layout viewport, so it would sit behind the keyboard. Lift it above and cap its height.
+function fitSheet() {
+  const dialog = $('#sheet'), vv = window.visualViewport;
+  if (!vv || !dialog.open) return;
+  const covered = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+  dialog.style.setProperty('--kb', `${covered}px`);
+  dialog.style.setProperty('--vvh', `${Math.round(vv.height)}px`);
+  dialog.classList.toggle('is-kb', covered > 80);
+  if (covered > 80) document.activeElement?.scrollIntoView?.({block: 'nearest'});
+}
+window.visualViewport?.addEventListener('resize', fitSheet);
+window.visualViewport?.addEventListener('scroll', fitSheet);
 function closeSheet() { if ($('#sheet').open) $('#sheet').close(); }
 const sheetTop = (title, ok = 'Salvar') => `<div class="n-sheet-top"><button type="button" class="n-link" data-close>Cancelar</button><h2 id="sheet-title">${title}</h2>${ok ? `<button class="n-link n-ok">${ok}</button>` : '<span></span>'}</div>`;
 
 function autosize(el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; }
 
 // Edits a task (from Hoje/Backlog) or, with {repeatId}, the repeat itself.
-function taskSheet({id, repeatId, when} = {}) {
+function taskSheet({id, repeatId, when, meeting: asMeeting} = {}) {
   const task = id ? state.tasks[id] : null;
   const repeat = state.repeats[repeatId || task?.repeat] && !state.repeats[repeatId || task?.repeat].deleted ? state.repeats[repeatId || task?.repeat] : null;
   const editingRepeat = !!repeatId;
   const source = editingRepeat ? repeat : task;
   const section = source?.section && state.sections[source.section] && !state.sections[source.section].deleted ? source.section : lastSection();
   const isBacklog = editingRepeat ? false : task ? task.date === '' : when === 'backlog';
+  const isMeeting = source ? !!source.meeting : !!asMeeting;
   const kind = repeatKind(repeat);
   const days = repeat && kind !== 'monthly' ? repeat.days : '12345';
   const title = editingRepeat ? 'Editar repetição' : task ? 'Editar tarefa' : 'Nova tarefa';
@@ -418,8 +483,9 @@ function taskSheet({id, repeatId, when} = {}) {
   openSheet(`<form class="n-form" id="task-form">${sheetTop(title)}
     <textarea name="text" rows="1" required maxlength="10000" placeholder="Tarefa" aria-label="Tarefa" ${task || editingRepeat ? '' : 'autofocus'}>${esc(source?.text || '')}</textarea>
     <fieldset class="n-fieldset"><legend>Seção</legend><div class="n-chips">${sections().map(s => `<label class="n-chip"><input type="radio" name="section" value="${s.id}" ${s.id === section ? 'checked' : ''}><span>${esc(s.name)}</span></label>`).join('')}</div></fieldset>
-    ${editingRepeat ? '' : `<fieldset class="n-seg"><legend class="n-sr">Quando</legend><label><input type="radio" name="when" value="today" ${isBacklog ? '' : 'checked'}><span>Hoje</span></label><label><input type="radio" name="when" value="backlog" ${isBacklog ? 'checked' : ''}><span>Backlog</span></label></fieldset>`}
+    ${editingRepeat ? '' : `<fieldset class="n-seg" ${tabPrefs(state).backlog || isBacklog ? '' : 'hidden'}><legend class="n-sr">Quando</legend><label><input type="radio" name="when" value="today" ${isBacklog ? '' : 'checked'}><span>Hoje</span></label><label><input type="radio" name="when" value="backlog" ${isBacklog ? 'checked' : ''}><span>Backlog</span></label></fieldset>`}
     <div class="n-opts" data-today-only>
+      <label class="n-opt">Reunião<input type="checkbox" class="n-switch" name="meeting" ${isMeeting ? 'checked' : ''}></label>
       <label class="n-opt">Horário<input type="time" name="time" value="${esc(source?.time || '')}"></label>
       <label class="n-opt">Repetir<select name="rule">
         ${[['none', 'Não repete'], ['daily', 'Todo dia'], ['weekdays', 'Dias úteis'], ['custom', 'Dias escolhidos'], ['monthly', 'Todo mês']].filter(([v]) => !editingRepeat || v !== 'none').map(([v, l]) => `<option value="${v}" ${v === kind ? 'selected' : ''}>${l}</option>`).join('')}
@@ -456,6 +522,7 @@ function taskSheet({id, repeatId, when} = {}) {
       localStorage.setItem('notas-section', sectionId);
       const onToday = editingRepeat || form.elements.when.value === 'today';
       const time = onToday ? form.elements.time.value : '';
+      const meeting = onToday && form.elements.meeting.checked;
       const rule = form.elements.rule.value;
       const chosen = [...form.elements.day].filter(b => b.checked).map(b => b.value).join('');
       const wantsRepeat = onToday && (rule === 'monthly' || (rule !== 'none' && chosen));
@@ -464,7 +531,7 @@ function taskSheet({id, repeatId, when} = {}) {
       let template = null;
       if (wantsRepeat) {
         rid ||= uid();
-        template = {text: value, section: sectionId, time, days: rule === 'monthly' ? '' : chosen, monthDay: rule === 'monthly' ? Number(form.elements.monthDay.value) : 0};
+        template = {text: value, section: sectionId, time, days: rule === 'monthly' ? '' : chosen, monthDay: rule === 'monthly' ? Number(form.elements.monthDay.value) : 0, meeting};
         ops.push({collection: 'repeats', id: rid, patch: template});
       } else if (rid) {
         ops.push({collection: 'repeats', id: rid, patch: {deleted: true}});
@@ -473,13 +540,13 @@ function taskSheet({id, repeatId, when} = {}) {
       let message = '';
       if (!editingRepeat) {
         if (task) {
-          ops.push({collection: 'tasks', id: task.id, patch: {text: value, section: sectionId, time, repeat: rid, date: onToday ? (task.date || today()) : ''}});
+          ops.push({collection: 'tasks', id: task.id, patch: {text: value, section: sectionId, time, meeting, repeat: rid, date: onToday ? (task.date || today()) : ''}});
         } else if (wantsRepeat && !repeatsOn(template, today())) {
           const next = nextOccurrence(template);
           message = next ? `Repete a partir de ${nextDayLabel(next)}.` : '';
         } else {
           const newId = wantsRepeat ? occurrenceId(rid, today()) : uid();
-          ops.push({collection: 'tasks', id: newId, patch: {text: value, section: sectionId, time, repeat: rid, date: onToday ? today() : '', done: false}});
+          ops.push({collection: 'tasks', id: newId, patch: {text: value, section: sectionId, time, meeting, repeat: rid, date: onToday ? today() : '', done: false}});
           if (!onToday && tab !== 'backlog') message = 'Tarefa salva no backlog.';
         }
       }
@@ -506,26 +573,43 @@ function parseMoney(input) {
 function billSheet(id) {
   const bill = id ? state.bills[id] : null;
   const month = bill?.month || billMonth;
-  const nextMonth = MONTHS[Number(addMonths(month, 1).slice(5, 7)) - 1];
+  const PRESETS = [[1, 'Todo mês'], [2, 'A cada 2 meses'], [3, 'A cada 3 meses'], [6, 'A cada 6 meses'], [12, 'Todo ano']];
+  const every = billEvery(bill || {}), preset = PRESETS.some(([n]) => n === every);
+  const rule = bill?.repeat === false ? 'none' : preset ? String(every) : 'custom';
   openSheet(`<form class="n-form" id="bill-form">${sheetTop(bill ? 'Editar conta' : 'Nova conta')}
     <input name="text" required maxlength="200" placeholder="Nome da conta" aria-label="Nome da conta" value="${esc(bill?.text || '')}" ${bill ? '' : 'autofocus'}>
     <div class="n-opts">
       <label class="n-opt">Valor<input name="amount" inputmode="decimal" required placeholder="R$ 0,00" value="${bill ? esc((bill.amount / 100).toFixed(2).replace('.', ',')) : ''}"></label>
       <label class="n-opt">Vence dia<select name="due"><option value="0">Sem dia</option>${Array.from({length: 31}, (_, i) => `<option value="${i + 1}" ${bill?.due === i + 1 ? 'selected' : ''}>${i + 1}</option>`).join('')}</select></label>
-      <label class="n-opt">Repetir todo mês<input type="checkbox" class="n-switch" name="repeat" ${bill?.repeat === false ? '' : 'checked'}></label>
+      <label class="n-opt">Repetir<select name="rule"><option value="none" ${rule === 'none' ? 'selected' : ''}>Não repete</option>${PRESETS.map(([n, l]) => `<option value="${n}" ${rule === String(n) ? 'selected' : ''}>${l}</option>`).join('')}<option value="custom" ${rule === 'custom' ? 'selected' : ''}>Outro…</option></select></label>
+      <div class="n-opt" data-custom>A cada (meses)<span class="n-step"><button type="button" data-step="-1" aria-label="Menos um mês">−</button><output data-n aria-live="polite">${preset ? 4 : every}</output><button type="button" data-step="1" aria-label="Mais um mês">+</button></span></div>
     </div>
-    <p class="n-note" data-repeat-note>Em ${nextMonth} ela volta como não paga, com o mesmo valor.</p>
+    <p class="n-note" data-repeat-note></p>
     <p class="n-error" data-error hidden>Informe o valor em reais, por exemplo 119,90.</p>
     ${bill ? '<div class="n-sheet-actions"><button type="button" class="n-btn n-gray n-danger" data-delete>Excluir conta</button></div>' : ''}
   </form>`, () => {
     const form = $('#bill-form');
-    const note = () => { $('[data-repeat-note]', form).hidden = !form.elements.repeat.checked; };
-    form.elements.repeat.addEventListener('change', note); note();
+    const out = $('[data-n]', form);
+    const months = () => form.elements.rule.value === 'custom' ? Number(out.textContent) : Number(form.elements.rule.value);
+    const note = () => {
+      const n = months(), none = form.elements.rule.value === 'none';
+      $('[data-custom]', form).hidden = form.elements.rule.value !== 'custom';
+      $('[data-repeat-note]', form).hidden = none;
+      $('[data-repeat-note]', form).textContent = none ? '' : n === 1
+        ? `Em ${monthLabel(addMonths(month, 1))} ela volta como não paga, com o mesmo valor.`
+        : `Próximas: ${[1, 2, 3].map(j => monthLabel(addMonths(month, j * n))).join(', ')}.`;
+    };
+    form.elements.rule.addEventListener('change', note);
+    form.addEventListener('click', e => {
+      const step = e.target.closest('[data-step]');
+      if (step) { out.textContent = Math.min(24, Math.max(1, Number(out.textContent) + Number(step.dataset.step))); note(); }
+    });
+    note();
     form.onsubmit = e => {
       e.preventDefault();
       const amount = parseMoney(form.elements.amount.value);
       if (amount === null) { $('[data-error]', form).hidden = false; return form.elements.amount.focus(); }
-      commit('bills', id || uid(), {text: form.elements.text.value.trim(), amount, due: Number(form.elements.due.value), repeat: form.elements.repeat.checked, month, ...(!bill ? {done: false} : {})});
+      commit('bills', id || uid(), {text: form.elements.text.value.trim(), amount, due: Number(form.elements.due.value), repeat: form.elements.rule.value !== 'none', every: form.elements.rule.value === 'none' ? 1 : months(), month, ...(!bill ? {done: false} : {})});
       closeSheet();
     };
     $('[data-delete]', form)?.addEventListener('click', () => { commit('bills', id, {deleted: true}); closeSheet(); });
@@ -741,10 +825,13 @@ document.addEventListener('click', e => {
   else if (d.toggle) { const c = d.collection; commit(c, d.toggle, {done: !state[c][d.toggle].done}); }
   else if (d.editTask) taskSheet({id: d.editTask});
   else if ('newTask' in d) taskSheet({when: tab === 'backlog' ? 'backlog' : 'today'});
+  else if ('newMeeting' in d) taskSheet({when: 'today', meeting: true});
   else if (d.editRepeat) taskSheet({repeatId: d.editRepeat});
   else if (d.editBill) billSheet(d.editBill);
   else if ('newBill' in d) billSheet();
   else if (d.month) { billMonth = d.month; render(); }
+  else if (d.billsView) { billsView = d.billsView; render(); }
+  else if (d.openMonth) { openMonths.has(d.openMonth) ? openMonths.delete(d.openMonth) : openMonths.add(d.openMonth); render(); }
   else if (d.editSection) sectionSheet(d.editSection);
   else if ('newSection' in d) sectionSheet();
   else if ('selectMode' in d) { selecting = !selecting; selected.clear(); render(); }
@@ -769,6 +856,7 @@ document.addEventListener('click', e => {
   else if (d.passkey) passkeySheet(d.passkey);
 });
 document.addEventListener('change', e => {
+  if (e.target.matches('[data-tab-pref]')) commit('prefs', 'tabs', {[e.target.dataset.tabPref]: e.target.checked});
   if (e.target.matches('[data-pick-day]') && e.target.value) { historyDate = e.target.value < today() ? e.target.value : addDays(today(), -1); render(); }
 });
 $('#sheet').addEventListener('click', e => {

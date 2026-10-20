@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {initialState, apply, rollover, migrate, repeatsOn, lastPending, pendingOn, carryOps, sortedSections, itemKey, itemId, listed} from '../public/model.js';
+import {initialState, apply, rollover, migrate, repeatsOn, lastPending, pendingOn, carryOps, sortedSections, itemKey, itemId, listed, tabPrefs, shiftMonth, scheduledBills, repeatingBills} from '../public/model.js';
 
 const run = (s, ops) => ops.forEach(op => apply(s, op));
 
@@ -112,4 +112,69 @@ test('item de compra: mesmo nome com acento ou caixa diferente vira o mesmo regi
   assert.equal(listed(s).length, 0, 'limpar tira da lista sem apagar');
   apply(s, {collection: 'shopping', id: itemId('Leite'), patch: {listed: true}});
   assert.equal(listed(s).length, 1, 'adicionar de novo volta para a lista');
+});
+
+test('ocorrência de uma repetição marcada como reunião herda a marca', () => {
+  const s = initialState();
+  s.repeats.a = {id: 'a', text: 'Daily', section: 's1', time: '11:00', days: '12345', monthDay: 0, meeting: true};
+  s.repeats.b = {id: 'b', text: 'Correr', section: 's0', time: '13:30', days: '12345', monthDay: 0};
+  run(s, rollover(s, '2026-10-19'));
+  assert.equal(s.tasks['r-a-2026-10-19'].meeting, true);
+  assert.equal(s.tasks['r-b-2026-10-19'].meeting, undefined);
+});
+
+test('abas opcionais: padrão e escolhas da pessoa', () => {
+  const s = initialState();
+  assert.deepEqual(tabPrefs(s), {reunioes: false, backlog: true, compras: true, contas: true});
+  apply(s, {collection: 'prefs', id: 'tabs', patch: {reunioes: true}});
+  apply(s, {collection: 'prefs', id: 'tabs', patch: {contas: false}});
+  assert.deepEqual(tabPrefs(s), {reunioes: true, backlog: true, compras: true, contas: false});
+  s.prefs.tabs.backlog = 'sim';
+  assert.equal(tabPrefs(s).backlog, true);
+});
+
+test('conta a cada 2 meses só volta de dois em dois meses e mantém o ritmo', () => {
+  const s = initialState();
+  s.months['2026-10'] = {id: '2026-10', month: '2026-10'};
+  s.bills.f = {id: 'f', text: 'Faxina', amount: 60000, due: 25, month: '2026-10', done: true, repeat: true, every: 2};
+  s.bills.l = {id: 'l', text: 'Luz', amount: 28000, due: 28, month: '2026-10', done: false, repeat: true};
+  run(s, rollover(s, '2026-11-02'));
+  assert.equal(s.bills['f-2026-11'], undefined);
+  assert.equal(s.bills['l-2026-11'].amount, 28000);
+  run(s, rollover(s, '2026-12-01'));
+  assert.deepEqual({...s.bills['f-2026-12'], id: undefined}, {id: undefined, text: 'Faxina', amount: 60000, due: 25, month: '2026-12', done: false, repeat: true, every: 2});
+  assert.equal(s.bills['l-2026-12'].every, undefined);
+  run(s, rollover(s, '2027-01-03'));
+  assert.equal(s.bills['f-2027-01'], undefined);
+  run(s, rollover(s, '2027-02-01'));
+  assert.ok(s.bills['f-2027-02']);
+});
+
+test('conta sem repetir, ou excluída no mês, não volta', () => {
+  const s = initialState();
+  s.months['2026-09'] = {id: '2026-09', month: '2026-09'};
+  s.bills.a = {id: 'a', text: 'A', amount: 1, month: '2026-10', repeat: true, every: 3, deleted: true};
+  s.bills.a0 = {id: 'a-2026-07', text: 'A', amount: 1, month: '2026-07', repeat: true, every: 3};
+  s.bills.b = {id: 'b', text: 'B', amount: 1, month: '2026-07', repeat: true, every: 3};
+  run(s, rollover(s, '2026-10-05'));
+  assert.equal(s.bills['b-2026-10'].every, 3);
+  assert.equal(s.bills['a-2027-01'], undefined);
+  assert.deepEqual(repeatingBills(s).map(b => b.id), ['b-2026-10']);
+  assert.equal(scheduledBills(s, '2027-01', 1)[0].items.map(i => i.text).join(), 'B');
+});
+
+test('agendadas projeta os próximos meses pelo ritmo de cada conta', () => {
+  const s = initialState();
+  s.bills.l = {id: 'l-2026-09', text: 'Luz', amount: 100, due: 5, month: '2026-09', repeat: true};
+  s.bills.l2 = {id: 'l-2026-10', text: 'Luz', amount: 100, due: 5, month: '2026-10', repeat: true};
+  s.bills.f = {id: 'f-2026-10', text: 'Faxina', amount: 600, due: 25, month: '2026-10', repeat: true, every: 2};
+  s.bills.x = {id: 'x', text: 'Avulsa', amount: 9, month: '2026-10', repeat: false};
+  s.bills.y = {id: 'y-2026-08', text: 'Antiga', amount: 7, month: '2026-08', repeat: true};
+  s.bills.y2 = {id: 'y-2026-09', text: 'Antiga', amount: 7, month: '2026-09', repeat: true, deleted: true};
+  const m = scheduledBills(s, '2026-11', 4);
+  assert.deepEqual(m.map(x => x.month), ['2026-11', '2026-12', '2027-01', '2027-02']);
+  assert.deepEqual(m.map(x => x.items.map(i => i.text)), [['Luz'], ['Luz', 'Faxina'], ['Luz'], ['Luz', 'Faxina']]);
+  assert.deepEqual(m.map(x => x.total), [100, 700, 100, 700]);
+  assert.equal(shiftMonth('2026-11', 14), '2028-01');
+  assert.equal(shiftMonth('2026-01', -1), '2025-12');
 });

@@ -166,8 +166,11 @@ body[data-screen="sub"] .n-tabbar, body[data-screen="sub"] .n-float { display: n
 /* ---------- Sheets ---------- */
 .n-sheet {
   color: var(--text); background: var(--group); border: 0; padding: 8px 16px calc(24px + env(safe-area-inset-bottom));
-  width: 100%; max-width: 600px; max-height: 92dvh; margin: auto auto 0; border-radius: 14px 14px 0 0; overflow: auto;
+  width: 100%; max-width: 600px; max-height: min(92dvh, calc(var(--vvh, 100dvh) - 12px)); margin: auto auto var(--kb, 0px); border-radius: 14px 14px 0 0; overflow: auto;
+  overscroll-behavior: contain;
 }
+/* Keyboard open: it already covers the home indicator area. */
+.n-sheet.is-kb { padding-bottom: 16px; }
 .n-sheet::before { content: ""; display: block; width: 36px; height: 5px; border-radius: 3px; background: #48484a; margin: 0 auto 6px; }
 .n-sheet::backdrop { background: rgba(0, 0, 0, .55); }
 .n-sheet[open] { animation: n-rise .28s cubic-bezier(.2, .8, .2, 1); }
@@ -249,3 +252,20 @@ body[data-screen="sub"] .n-toast { bottom: calc(env(safe-area-inset-bottom) + 90
 .n-person i { width: 10px; height: 10px; border-radius: 50%; }
 .n-avatar { width: 36px; height: 36px; border-radius: 50%; color: #000; font-weight: 700; font-size: 16px; display: grid; place-items: center; }
 .n-person-dot { flex: none; width: 12px; height: 12px; border-radius: 50%; }
+
+/* ---------- Contas: seletor, ritmo e agendadas ---------- */
+.n-seg-b { text-align: center; font-size: 15px; padding: 8px 0; border-radius: 7px; color: var(--secondary); }
+.n-seg-b.is-on { background: #636366; color: var(--text); font-weight: 600; }
+.n-seg:has(.n-seg-b) { margin-top: 14px; }
+.n-every { font-style: normal; color: var(--yellow); }
+.n-step { display: flex; align-items: center; background: #3a3a3c; border-radius: 8px; overflow: hidden; }
+.n-step button { width: 44px; height: 36px; font-size: 20px; }
+.n-step output { min-width: 40px; text-align: center; font-weight: 600; border-inline: .5px solid #555; padding: 7px 0; font-variant-numeric: tabular-nums; }
+.n-month + .n-month { border-top: .5px solid var(--line); }
+.n-month-head { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 3px 12px; align-items: baseline; text-align: left; padding: 12px 14px; }
+.n-month-name { font-size: 16px; font-weight: 600; }
+.n-month-sum { grid-column: 1 / -1; font-size: 13px; line-height: 1.4; color: var(--secondary); }
+.n-month-sum em { font-style: normal; color: var(--yellow); }
+.n-month-items { padding: 0 14px 10px; }
+.n-month-item { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 7px 0; border-top: .5px solid var(--line); font-size: 15px; }
+.n-month-item small { display: block; color: var(--secondary); font-size: 12.5px; }

@@ -20,13 +20,21 @@ test('API: autenticação, sessão, persistência, SSE, idempotência e validaç
  assert.equal((await post({...op,opId:'invalid',id:'__proto__'})).status,400);
  assert.equal((await post({...op,opId:'invalid2',collection:'constructor'})).status,400);
  assert.equal((await post({opId:'rep',collection:'repeats',id:'r1',patch:{text:'Daily',section:'s1',time:'09:30',days:'12345',monthDay:0}})).status,200);
+ assert.equal((await post({opId:'rep-meeting',collection:'repeats',id:'r3',patch:{text:'Daily',section:'s1',time:'11:00',days:'12345',monthDay:0,meeting:true}})).status,200);
+ assert.equal((await post({opId:'pref-ok',collection:'prefs',id:'tabs',patch:{reunioes:true,contas:false}})).status,200);
+ assert.equal((await post({opId:'pref-bad',collection:'prefs',id:'tabs',patch:{reunioes:'sim'}})).status,400);
+ assert.equal((await post({opId:'pref-unknown',collection:'prefs',id:'tabs',patch:{outra:true}})).status,400);
  assert.equal((await post({opId:'bad-time',collection:'repeats',id:'r2',patch:{time:'25:00'}})).status,400);
  assert.equal((await post({opId:'bad-days',collection:'repeats',id:'r2',patch:{days:'789'}})).status,400);
+ assert.equal((await post({opId:'bill-every',collection:'bills',id:'b2',patch:{every:2}})).status,200);
+ assert.equal((await post({opId:'bill-every-0',collection:'bills',id:'b2',patch:{every:0}})).status,400);
+ assert.equal((await post({opId:'bill-every-25',collection:'bills',id:'b2',patch:{every:25}})).status,400);
+ assert.equal((await post({opId:'bill-every-frac',collection:'bills',id:'b2',patch:{every:1.5}})).status,400);
  assert.equal((await post({opId:'bad-due',collection:'bills',id:'b1',patch:{due:32}})).status,400);
  assert.equal((await(await fetch(url+'/api/session',{headers:headers()})).json()).protected,true);
  assert.equal((await fetch(url+'/api/operations',{method:'POST',headers:{...headers(),origin:'https://evil.example'},body:JSON.stringify(op)})).status,403);
  let state=await(await fetch(url+'/api/state',{headers:headers()})).json();assert.equal(state.tasks.task.text,'Teste');
- const backup=await(await fetch(url+'/api/export',{headers:headers()})).json();assert.equal(backup.operations.length,2);
+ const backup=await(await fetch(url+'/api/export',{headers:headers()})).json();assert.equal(backup.operations.length,5);assert.equal(state.prefs.tabs.reunioes,true);assert.equal(state.repeats.r3.meeting,true);
  const out=await fetch(url+'/api/logout',{method:'POST',headers:headers()});assert.match(out.headers.get('set-cookie'),/Max-Age=0/);
  assert.match(cookie,/^session=/);const maxAge=(await fetch(url+'/api/login',{method:'POST',body:JSON.stringify({password:'test-only-password'})})).headers.get('set-cookie');assert.match(maxAge,/Max-Age=31536000/);
  // Passkeys: público só o necessário para entrar; cadastro exige sessão.

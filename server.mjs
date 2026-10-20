@@ -247,17 +247,18 @@ function mcpResponse(agent, message) {
 const schema = {
   sections: {name: 'string', order: 'number', deleted: 'boolean'},
   tasks: {text: 'string', section: 'string', date: 'string', time: 'string', done: 'boolean', repeat: 'string', from: 'string', meeting: 'boolean', deleted: 'boolean'},
-  repeats: {text: 'string', section: 'string', time: 'string', days: 'string', monthDay: 'number', deleted: 'boolean'},
-  bills: {text: 'string', amount: 'number', due: 'number', repeat: 'boolean', group: 'string', month: 'string', done: 'boolean', deleted: 'boolean'},
+  repeats: {text: 'string', section: 'string', time: 'string', days: 'string', monthDay: 'number', meeting: 'boolean', deleted: 'boolean'},
+  bills: {text: 'string', amount: 'number', due: 'number', repeat: 'boolean', every: 'number', group: 'string', month: 'string', done: 'boolean', deleted: 'boolean'},
   meetings: {text: 'string', time: 'string', weekday: 'number', section: 'string', deleted: 'boolean'},
   days: {date: 'string', reviewed: 'boolean'},
   months: {month: 'string'},
+  prefs: {reunioes: 'boolean', backlog: 'boolean', compras: 'boolean', contas: 'boolean'},
   shopping: {text: 'string', done: 'boolean', listed: 'boolean', added: 'number', by: 'string'},
 };
 // Field formats beyond the type check; time is optional (empty string).
 const formats = {
   time: v => v === '' || /^([01]\d|2[0-3]):[0-5]\d$/.test(v), days: v => /^[0-6]{0,7}$/.test(v),
-  monthDay: v => Number.isInteger(v) && v <= 31, due: v => Number.isInteger(v) && v <= 31,
+  every: v => Number.isInteger(v) && v >= 1 && v <= 24, monthDay: v => Number.isInteger(v) && v <= 31, due: v => Number.isInteger(v) && v <= 31,
   order: v => Number.isInteger(v), weekday: v => Number.isInteger(v) && v <= 6,
 };
 function validate(op) {

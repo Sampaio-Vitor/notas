@@ -1,7 +1,7 @@
 // Shared by server and client: state shape, patch application and the
 // daily/monthly rollover. Every change is a patch {collection,id,patch}.
 // `shopping` lives in the shared space; everything else is per person.
-export const COLLECTIONS = ['sections', 'tasks', 'repeats', 'bills', 'days', 'months', 'meetings', 'shopping'];
+export const COLLECTIONS = ['sections', 'tasks', 'repeats', 'bills', 'days', 'months', 'meetings', 'shopping', 'prefs'];
 
 export const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 export const weekday = date => new Date(`${date}T12:00:00`).getDay();
@@ -28,6 +28,11 @@ export function apply(state, op) {
   return state;
 }
 
+// Which optional tabs a person wants (stored per person in prefs.tabs). Hoje and
+// Ajustes always show; Reuniões is off until someone turns it on.
+export const TAB_DEFAULTS = {reunioes: false, backlog: true, compras: true, contas: true};
+export const tabPrefs = state => ({...TAB_DEFAULTS, ...Object.fromEntries(Object.entries(state.prefs?.tabs || {}).filter(([k, v]) => k in TAB_DEFAULTS && typeof v === 'boolean'))});
+
 export const live = (state, collection) => Object.values(state[collection] || {}).filter(x => !x.deleted);
 
 export function sortedSections(state) {
@@ -46,6 +51,39 @@ export function repeatsOn(repeat, date) {
   return String(repeat.days || '').includes(String(weekday(date)));
 }
 
+// ---- Bills: months are 'YYYY-MM'. A bill repeats every `every` months (default 1);
+// copies share one chain, named by the id without the trailing '-YYYY-MM' parts.
+export const billEvery = b => (Number.isInteger(b.every) && b.every >= 1 ? b.every : 1);
+export const billChain = id => id.replace(/(?:-\d{4}-\d{2})+$/, '');
+export function shiftMonth(month, n) {
+  const t = Number(month.slice(0, 4)) * 12 + Number(month.slice(5, 7)) - 1 + n;
+  return `${Math.floor(t / 12)}-${String(t % 12 + 1).padStart(2, '0')}`;
+}
+// The newest record of each chain, deleted ones included (a deleted newest record ends the chain).
+function latestByChain(state) {
+  const latest = new Map();
+  for (const b of Object.values(state.bills || {})) {
+    const key = billChain(b.id), seen = latest.get(key);
+    if (!seen || b.month > seen.month) latest.set(key, b);
+  }
+  return latest;
+}
+// Chains that will keep coming back: the record that carries the schedule forward.
+export const repeatingBills = state => [...latestByChain(state).values()].filter(b => !b.deleted && b.repeat !== false);
+// What the rollover will create in the `count` months starting at `from`.
+export function scheduledBills(state, from, count = 12) {
+  const months = Array.from({length: count}, (_, i) => ({month: shiftMonth(from, i), items: [], total: 0}));
+  for (const b of repeatingBills(state)) {
+    const every = billEvery(b);
+    for (const m of months) {
+      const gap = (Number(m.month.slice(0, 4)) - Number(b.month.slice(0, 4))) * 12 + Number(m.month.slice(5, 7)) - Number(b.month.slice(5, 7));
+      if (gap > 0 && gap % every === 0) { m.items.push({id: b.id, text: b.text, amount: b.amount || 0, due: b.due || 0, every}); m.total += b.amount || 0; }
+    }
+  }
+  for (const m of months) m.items.sort((x, y) => (x.due || 99) - (y.due || 99) || x.text.localeCompare(y.text, 'pt-BR'));
+  return months;
+}
+
 export const occurrenceId = (repeatId, date) => `r-${repeatId}-${date}`;
 
 export function rollover(state, date) {
@@ -55,15 +93,19 @@ export function rollover(state, date) {
   if (!state.days[date]) {
     add('days', date, {date});
     for (const r of live(state, 'repeats').filter(r => repeatsOn(r, date))) {
-      add('tasks', occurrenceId(r.id, date), {text: r.text, section: r.section, time: r.time || '', date, done: false, repeat: r.id});
+      add('tasks', occurrenceId(r.id, date), {text: r.text, section: r.section, time: r.time || '', date, done: false, repeat: r.id, ...(r.meeting ? {meeting: true} : {})});
     }
   }
   const month = date.slice(0, 7);
   if (!state.months[month]) {
     add('months', month, {month});
     const previous = Object.keys(state.months).filter(m => m < month).sort().at(-1);
-    for (const b of live(state, 'bills').filter(b => b.month === previous && b.repeat !== false)) {
-      add('bills', `${b.id.replace(/(?:-\d{4}-\d{2})+$/, '')}-${month}`, {text: b.text, amount: b.amount, due: b.due || 0, month, done: false, repeat: true});
+    // A bill comes back `every` months after the month it was last copied to; monthly ones
+    // also tolerate a gap (previous = the last month that existed).
+    for (const b of live(state, 'bills').filter(b => b.repeat !== false)) {
+      const every = billEvery(b);
+      if (b.month !== shiftMonth(month, -every) && !(every === 1 && b.month === previous)) continue;
+      add('bills', `${billChain(b.id)}-${month}`, {text: b.text, amount: b.amount, due: b.due || 0, month, done: false, repeat: true, ...(every > 1 ? {every} : {})});
     }
   }
   return ops;
