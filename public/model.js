@@ -1,7 +1,7 @@
 // Shared by server and client: state shape, patch application and the
 // daily/monthly rollover. Every change is a patch {collection,id,patch}.
 // `shopping` lives in the shared space; everything else is per person.
-export const COLLECTIONS = ['sections', 'tasks', 'repeats', 'bills', 'days', 'months', 'meetings', 'shopping', 'prefs'];
+export const COLLECTIONS = ['sections', 'tasks', 'repeats', 'bills', 'billRules', 'days', 'months', 'meetings', 'shopping', 'prefs'];
 
 export const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 export const weekday = date => new Date(`${date}T12:00:00`).getDay();
@@ -33,7 +33,7 @@ export function apply(state, op) {
 export const TAB_DEFAULTS = {reunioes: false, backlog: true, compras: true, contas: true};
 export const tabPrefs = state => ({...TAB_DEFAULTS, ...Object.fromEntries(Object.entries(state.prefs?.tabs || {}).filter(([k, v]) => k in TAB_DEFAULTS && typeof v === 'boolean'))});
 
-export const live = (state, collection) => Object.values(state[collection] || {}).filter(x => !x.deleted);
+export const live = (state, collection) => Object.values(state[collection] || {}).filter(x => !x.deleted && !(collection === 'bills' && x.skipped));
 
 export function sortedSections(state) {
   return Object.values(state.sections).filter(s => !s.deleted)
@@ -68,16 +68,131 @@ function latestByChain(state) {
   }
   return latest;
 }
-// Chains that will keep coming back: the record that carries the schedule forward.
-export const repeatingBills = state => [...latestByChain(state).values()].filter(b => !b.deleted && b.repeat !== false);
+// Explicit rules take precedence; untouched legacy chains infer their latest record.
+export function billRule(state, bill) {
+  const key = billChain(bill.id);
+  return state.billRules?.[key] || latestByChain(state).get(key);
+}
+export function repeatingBills(state) {
+  const rules = latestByChain(state);
+  for (const r of Object.values(state.billRules || {})) rules.set(r.id, r);
+  return [...rules.values()].filter(b => !b.deleted && b.repeat !== false && /^\d{4}-(0[1-9]|1[0-2])$/.test(b.month));
+}
+const monthGap = (a, b) => (Number(a.slice(0, 4)) - Number(b.slice(0, 4))) * 12 + Number(a.slice(5, 7)) - Number(b.slice(5, 7));
+export function billDates(b, month = b.month) {
+  if (b.calcMode !== 'occurrence') return [];
+  const dates = [];
+  for (let day = 1; day <= lastDayOfMonth(`${month}-01`); day++) {
+    const date = `${month}-${String(day).padStart(2, '0')}`;
+    if (date >= (b.starts || '') && String(b.weekdays || '').includes(String(weekday(date)))) dates.push(date);
+  }
+  return dates;
+}
+export const billIncludedDates = b => billDates(b).filter(date => !String(b.excluded || '').split(',').includes(date));
+// Each occurrence stores its own pricing inputs and total. Rules never carry exclusions.
+const calcFields = b => b.calcMode ? {calcMode: b.calcMode, unitAmount: b.unitAmount || 0, weekdays: b.weekdays || '', starts: b.starts || '', excluded: b.excluded || ''} : {};
+export function billSnapshot(b, month = b.month) {
+  const value = {...b, month};
+  return {...calcFields(value), amount: value.calcMode === 'occurrence' ? billIncludedDates(value).length * (value.unitAmount || 0) : value.amount || 0};
+}
+const billFields = b => ({text: b.text, amount: b.amount || 0, due: b.due || 0, repeat: b.repeat !== false, every: billEvery(b), month: b.month, ...calcFields(b)});
+const ruleFields = b => ({...billFields(b), ...(b.calcMode ? {excluded: ''} : {})});
+const ruleFingerprint = b => JSON.stringify(b ? {...ruleFields(b), deleted: !!b.deleted} : null);
+const recordFingerprint = b => JSON.stringify(b ? Object.fromEntries(Object.keys(b).sort().map(key => [key, b[key]])) : null);
+// Compare against the state before the entire gesture, never against partially applied patches.
+export function guardBillOps(state, ops) {
+  return ops.map(op => !['bills', 'billRules'].includes(op.collection) ? op : {...op,
+    ...(op.collection === 'bills' ? {expectedBill: recordFingerprint(state.bills[op.id])} : {}),
+    expectedBillRule: ruleFingerprint(billRule(state, {id: op.id})),
+  });
+}
+export function billOpsConflict(state, ops) {
+  return ops.some(op => (op.expectedBill !== undefined && op.expectedBill !== recordFingerprint(state.bills[op.id]))
+    || (op.expectedBillRule !== undefined && op.expectedBillRule !== ruleFingerprint(billRule(state, {id: op.id}))));
+}
+const billOp = (id, patch, collection = 'bills') => ({collection, id, patch});
+function occurrence(state, rule, month) {
+  const chain = billChain(rule.id);
+  return Object.values(state.bills || {}).find(b => billChain(b.id) === chain && b.month === month);
+}
+export function nextBillMonth(rule, from) {
+  return shiftMonth(rule.month, Math.max(1, Math.ceil(monthGap(from, rule.month) / billEvery(rule))) * billEvery(rule));
+}
+// One row per active series, including a virtual next occurrence outside the projection window.
+// Pending one-off bills are included individually; payment history stays in the monthly view.
+export function billCatalog(state, month) {
+  const rows = repeatingBills(state).map(rule => {
+    const chain = billChain(rule.id);
+    const pending = live(state, 'bills').filter(b => billChain(b.id) === chain && b.month >= month && !b.done).sort((a, b) => a.month.localeCompare(b.month))[0];
+    if (pending) return {...pending, recurring: true};
+    let next = nextBillMonth(rule, month);
+    // Skip exceptions already paid, removed or skipped; there is no fixed month horizon.
+    while (occurrence(state, rule, next)) next = shiftMonth(next, billEvery(rule));
+    return {...billFields(rule), ...billSnapshot({...rule, excluded: ''}, next), id: `${chain}-${next}`, month: next, done: false, recurring: true, virtual: true};
+  });
+  rows.push(...live(state, 'bills').filter(b => b.repeat === false && !b.done).map(b => ({...b, recurring: false})));
+  return rows.sort((a, b) => a.month.localeCompare(b.month) || (a.due || 32) - (b.due || 32) || a.text.localeCompare(b.text, 'pt-BR'));
+}
+// Freeze the legacy inferred rule before changing an occurrence, so exceptions never
+// become the template for the next month. Existing installations need no bulk migration.
+export function editBillOps(state, bill, patch, scope = 'one', expectedRule) {
+  bill = state.bills[bill.id] || bill;
+  if (bill.deleted || bill.skipped) return [];
+  const chain = billChain(bill.id), rule = billRule(state, bill), ops = [];
+  if (expectedRule !== undefined && ruleFingerprint(rule) !== ruleFingerprint(expectedRule)) return [];
+  const recurring = rule && !rule.deleted && rule.repeat !== false;
+  if (bill.virtual && !recurring) return [];
+  if (recurring && !state.billRules?.[chain]) ops.push(billOp(chain, ruleFields(rule), 'billRules'));
+  if (!recurring && patch.repeat === true) ops.push(billOp(chain, ruleFields({...billFields(bill), ...patch, month: bill.month}), 'billRules'));
+  if (scope === 'future' && recurring) {
+    ops.push(billOp(chain, ruleFields({...billFields(rule), ...patch, month: bill.month}), 'billRules'));
+    for (const b of Object.values(state.bills).filter(b => !b.deleted && (!b.skipped || b.skipReason === 'frequency') && billChain(b.id) === chain && b.month > bill.month && !b.done)) {
+      const updated = {...b, ...patch, month: b.month, excluded: b.excluded || ''};
+      const suppressed = patch.repeat === false || monthGap(b.month, bill.month) % patch.every !== 0;
+      ops.push(billOp(b.id, suppressed ? {skipped: true, skipReason: patch.repeat === false ? 'removed' : 'frequency'} : {text: patch.text, ...billSnapshot(updated), due: patch.due, repeat: true, every: patch.every, skipped: false, skipReason: ''}));
+    }
+  }
+  const value = scope === 'one' && recurring ? {text: patch.text, ...billSnapshot({...bill, ...patch}), due: patch.due} : {...patch, ...billSnapshot({...bill, ...patch})};
+  ops.push(billOp(bill.id, {...(bill.virtual ? {...billFields(bill), done: false} : {}), ...value, month: bill.month}));
+  return ops;
+}
+export function deleteBillOps(state, bill, scope = 'one') {
+  bill = state.bills[bill.id] || bill;
+  if (bill.deleted || bill.skipped) return [];
+  const chain = billChain(bill.id), rule = billRule(state, bill), ops = [];
+  const recurring = rule && !rule.deleted && rule.repeat !== false;
+  if (bill.virtual && !recurring) return [];
+  if (recurring) {
+    if (!state.billRules?.[chain] || scope === 'future') ops.push(billOp(chain, {...ruleFields(rule), ...(scope === 'future' ? {repeat: false} : {})}, 'billRules'));
+    if (scope === 'future') for (const b of Object.values(state.bills).filter(b => !b.deleted && (!b.skipped || b.skipReason === 'frequency') && billChain(b.id) === chain && b.month > bill.month && !b.done)) ops.push(billOp(b.id, {skipped: true, skipReason: 'removed'}));
+  }
+  ops.push(billOp(bill.id, {...(bill.virtual ? {...billFields(bill), done: false} : {}), skipped: true, skipReason: 'removed'}));
+  return ops;
+}
+export function undoBillOps(state, bill, ops) {
+  const rule = billRule(state, bill);
+  return ops.map(op => {
+    const before = state[op.collection][op.id] || (op.collection === 'billRules' && rule ? ruleFields(rule) : null);
+    const patch = {};
+    for (const [key, value] of Object.entries(op.patch)) {
+      if (before?.[key] !== undefined) patch[key] = before[key];
+      else if (key === 'skipped') patch[key] = false;
+      else if (key === 'skipReason') patch[key] = '';
+      else if (op.collection === 'billRules') patch[key] = value;
+    }
+    return {collection: op.collection, id: op.id, patch};
+  });
+}
 // What the rollover will create in the `count` months starting at `from`.
 export function scheduledBills(state, from, count = 12) {
   const months = Array.from({length: count}, (_, i) => ({month: shiftMonth(from, i), items: [], total: 0}));
   for (const b of repeatingBills(state)) {
     const every = billEvery(b);
     for (const m of months) {
-      const gap = (Number(m.month.slice(0, 4)) - Number(b.month.slice(0, 4))) * 12 + Number(m.month.slice(5, 7)) - Number(b.month.slice(5, 7));
-      if (gap > 0 && gap % every === 0) { m.items.push({id: b.id, text: b.text, amount: b.amount || 0, due: b.due || 0, every}); m.total += b.amount || 0; }
+      const gap = monthGap(m.month, b.month), existing = occurrence(state, b, m.month);
+      if (existing) {
+        if (!existing.deleted && !existing.skipped && !existing.done) { m.items.push({...existing, every}); m.total += existing.amount || 0; }
+      } else if (gap > 0 && gap % every === 0) { const snapshot = billSnapshot({...b, excluded: ''}, m.month); m.items.push({id: b.id, text: b.text, ...snapshot, month: m.month, due: b.due || 0, every}); m.total += snapshot.amount; }
     }
   }
   for (const m of months) m.items.sort((x, y) => (x.due || 99) - (y.due || 99) || x.text.localeCompare(y.text, 'pt-BR'));
@@ -99,13 +214,12 @@ export function rollover(state, date) {
   const month = date.slice(0, 7);
   if (!state.months[month]) {
     add('months', month, {month});
-    const previous = Object.keys(state.months).filter(m => m < month).sort().at(-1);
-    // A bill comes back `every` months after the month it was last copied to; monthly ones
-    // also tolerate a gap (previous = the last month that existed).
-    for (const b of live(state, 'bills').filter(b => b.repeat !== false)) {
+    // Generate only this month's due occurrences; keep cadence across server downtime.
+    for (const b of repeatingBills(state)) {
       const every = billEvery(b);
-      if (b.month !== shiftMonth(month, -every) && !(every === 1 && b.month === previous)) continue;
-      add('bills', `${billChain(b.id)}-${month}`, {text: b.text, amount: b.amount, due: b.due || 0, month, done: false, repeat: true, ...(every > 1 ? {every} : {})});
+      const gap = monthGap(month, b.month);
+      if (gap <= 0 || gap % every !== 0 || occurrence(state, b, month)) continue;
+      add('bills', `${billChain(b.id)}-${month}`, {text: b.text, ...billSnapshot({...b, excluded: ''}, month), due: b.due || 0, month, done: false, repeat: true, ...(every > 1 ? {every} : {})});
     }
   }
   return ops;

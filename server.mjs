@@ -5,7 +5,7 @@ import {resolve, dirname, extname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {randomBytes, randomUUID, createHmac, timingSafeEqual} from 'node:crypto';
 import {generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse} from '@simplewebauthn/server';
-import {initialState, apply, rollover, migrate, normalize, itemKey, itemId, listed} from './public/model.js';
+import {initialState, apply, rollover, migrate, normalize, itemKey, itemId, listed, billOpsConflict} from './public/model.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '127.0.0.1', port = Number(process.env.PORT || 4329);
@@ -244,11 +244,13 @@ function mcpResponse(agent, message) {
 }
 
 // ---------- Validation ----------
+const billCalculation = {calcMode: 'string', unitAmount: 'number', weekdays: 'string', starts: 'string', excluded: 'string'};
 const schema = {
   sections: {name: 'string', order: 'number', deleted: 'boolean'},
   tasks: {text: 'string', section: 'string', date: 'string', time: 'string', done: 'boolean', repeat: 'string', from: 'string', meeting: 'boolean', deleted: 'boolean'},
   repeats: {text: 'string', section: 'string', time: 'string', days: 'string', monthDay: 'number', meeting: 'boolean', deleted: 'boolean'},
-  bills: {text: 'string', amount: 'number', due: 'number', repeat: 'boolean', every: 'number', group: 'string', month: 'string', done: 'boolean', deleted: 'boolean'},
+  bills: {text: 'string', amount: 'number', due: 'number', repeat: 'boolean', every: 'number', group: 'string', month: 'string', done: 'boolean', skipped: 'boolean', skipReason: 'string', deleted: 'boolean', ...billCalculation},
+  billRules: {text: 'string', amount: 'number', due: 'number', repeat: 'boolean', every: 'number', month: 'string', ...billCalculation},
   meetings: {text: 'string', time: 'string', weekday: 'number', section: 'string', deleted: 'boolean'},
   days: {date: 'string', reviewed: 'boolean'},
   months: {month: 'string'},
@@ -259,12 +261,21 @@ const schema = {
 const formats = {
   time: v => v === '' || /^([01]\d|2[0-3]):[0-5]\d$/.test(v), days: v => /^[0-6]{0,7}$/.test(v),
   every: v => Number.isInteger(v) && v >= 1 && v <= 24, monthDay: v => Number.isInteger(v) && v <= 31, due: v => Number.isInteger(v) && v <= 31,
+  month: v => /^\d{4}-(0[1-9]|1[0-2])$/.test(v),
+  calcMode: v => ['fixed', 'occurrence'].includes(v),
+  skipReason: v => ['', 'frequency', 'removed'].includes(v),
+  unitAmount: v => Number.isSafeInteger(v) && v <= 100000000,
+  weekdays: v => /^[0-6]{0,7}$/.test(v) && new Set(v).size === v.length,
+  starts: v => v === '' || (/^\d{4}-\d{2}-\d{2}$/.test(v) && Number.isFinite(Date.parse(`${v}T12:00:00Z`)) && new Date(`${v}T12:00:00Z`).toISOString().slice(0, 10) === v),
+  excluded: v => v === '' || (v.split(',').length <= 31 && v.split(',').every(date => /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(date))),
   order: v => Number.isInteger(v), weekday: v => Number.isInteger(v) && v <= 6,
 };
 function validate(op) {
   if (!op || typeof op.opId !== 'string' || op.opId.length > 100 || !Object.hasOwn(schema, op.collection)) return false;
   if (typeof op.id !== 'string' || op.id.length > 200 || ['__proto__', 'constructor', 'prototype'].includes(op.id)) return false;
   if (!op.patch || typeof op.patch !== 'object' || Array.isArray(op.patch)) return false;
+  if (op.batchId !== undefined && (typeof op.batchId !== 'string' || op.batchId.length > 100)) return false;
+  if (['expectedBill', 'expectedBillRule'].some(k => op[k] !== undefined && (typeof op[k] !== 'string' || op[k].length > 20000 || !['bills', 'billRules'].includes(op.collection)))) return false;
   return Object.entries(op.patch).every(([k, v]) => Object.hasOwn(schema[op.collection], k) && typeof v === schema[op.collection][k]
     && (typeof v !== 'string' || v.length <= 10000) && (typeof v !== 'number' || (Number.isFinite(v) && v >= 0)) && (!formats[k] || formats[k](v)));
 }
@@ -410,12 +421,15 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       if (route('POST', '/api/operations')) {
-        const op = await body(req);
-        if (!validate(op)) return json(400, {error: 'Alteração inválida'});
-        const space = op.collection === 'shopping' ? SHARED : user.id;
+        const request = await body(req), ops = Array.isArray(request) ? request : [request];
+        if (!ops.length || ops.length > 500 || !ops.every(validate)) return json(400, {error: 'Alteração inválida'});
+        const space = ops[0].collection === 'shopping' ? SHARED : user.id;
+        if (ops.some(op => (op.collection === 'shopping' ? SHARED : user.id) !== space)) return json(400, {error: 'Alteração inválida'});
+        const fresh = ops.filter(op => !db.prepare('SELECT id FROM operations WHERE id=?').get(op.opId));
+        if (billOpsConflict(spaces.get(space), fresh)) return json(409, {error: 'As contas mudaram em outro aparelho. Confira os dados e tente novamente.'});
         // Who added an item is decided here, not by the client.
-        if (op.collection === 'shopping') { delete op.patch.by; if (op.patch.listed === true) op.patch.by = user.id; }
-        commit([op], space, {user: user.id});
+        for (const op of ops) if (op.collection === 'shopping') { delete op.patch.by; if (op.patch.listed === true) op.patch.by = user.id; }
+        commit(ops, space, {user: user.id});
         return json(200, {ok: true});
       }
       return json(404, {error: 'Não encontrado'});

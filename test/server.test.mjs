@@ -4,6 +4,7 @@ import {spawn} from 'node:child_process';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {guardBillOps, editBillOps, deleteBillOps, apply, rollover} from '../public/model.js';
 async function launch(dir){const child=spawn(process.execPath,['server.mjs'],{env:{...process.env,PORT:'0',DATA_DIR:dir,APP_PASSWORD:'test-only-password'},stdio:['ignore','pipe','pipe']});const url=await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('startup timeout')),5000);child.stdout.on('data',b=>{const m=b.toString().match(/http:\/\/[^\s]+/);if(m){clearTimeout(timer);resolve(m[0])}});child.once('exit',code=>reject(Error(`exit ${code}`)))});return {child,url}}
 async function stop(child){await new Promise(resolve=>{child.once('exit',resolve);child.kill('SIGTERM')})}
 test('API: autenticação, sessão, persistência, SSE, idempotência e validação',async()=>{const dir=await mkdtemp(join(tmpdir(),'notas-test-'));let proc;try{
@@ -30,11 +31,18 @@ test('API: autenticação, sessão, persistência, SSE, idempotência e validaç
  assert.equal((await post({opId:'bill-every-0',collection:'bills',id:'b2',patch:{every:0}})).status,400);
  assert.equal((await post({opId:'bill-every-25',collection:'bills',id:'b2',patch:{every:25}})).status,400);
  assert.equal((await post({opId:'bill-every-frac',collection:'bills',id:'b2',patch:{every:1.5}})).status,400);
+ assert.equal((await post({opId:'bill-rule',collection:'billRules',id:'recurring',patch:{text:'Internet',amount:11990,due:25,month:'2026-10',every:2,repeat:true}})).status,200);
+ assert.equal((await post({opId:'bill-rule-invalid',collection:'billRules',id:'recurring',patch:{month:'2026-13'}})).status,400);
+ assert.equal((await post({opId:'bill-rule-invalid-every',collection:'billRules',id:'recurring',patch:{every:25}})).status,400);
+ assert.equal((await post({opId:'bill-skip',collection:'bills',id:'b2',patch:{skipped:true}})).status,200);
+ assert.equal((await post({opId:'bill-unskip',collection:'bills',id:'b2',patch:{skipped:false}})).status,200);
+ assert.equal((await post({opId:'bill-occurrence',collection:'bills',id:'therapy',patch:{text:'Terapia',amount:80000,month:'2026-10',repeat:true,calcMode:'occurrence',unitAmount:20000,weekdays:'4',starts:'2026-10-01',excluded:'2026-10-29'}})).status,200);
+ for(const [field,value] of [['calcMode','other'],['unitAmount',1.5],['unitAmount',100000001],['weekdays','44'],['weekdays','7'],['starts','2026-02-30'],['excluded','ontem']])assert.equal((await post({opId:'bad-calc-'+field+'-'+value,collection:'bills',id:'therapy',patch:{[field]:value}})).status,400);
  assert.equal((await post({opId:'bad-due',collection:'bills',id:'b1',patch:{due:32}})).status,400);
  assert.equal((await(await fetch(url+'/api/session',{headers:headers()})).json()).protected,true);
  assert.equal((await fetch(url+'/api/operations',{method:'POST',headers:{...headers(),origin:'https://evil.example'},body:JSON.stringify(op)})).status,403);
  let state=await(await fetch(url+'/api/state',{headers:headers()})).json();assert.equal(state.tasks.task.text,'Teste');
- const backup=await(await fetch(url+'/api/export',{headers:headers()})).json();assert.equal(backup.operations.length,5);assert.equal(state.prefs.tabs.reunioes,true);assert.equal(state.repeats.r3.meeting,true);
+ const backup=await(await fetch(url+'/api/export',{headers:headers()})).json();assert.equal(backup.operations.length,9);assert.equal(state.prefs.tabs.reunioes,true);assert.equal(state.repeats.r3.meeting,true);
  const out=await fetch(url+'/api/logout',{method:'POST',headers:headers()});assert.match(out.headers.get('set-cookie'),/Max-Age=0/);
  assert.match(cookie,/^session=/);const maxAge=(await fetch(url+'/api/login',{method:'POST',body:JSON.stringify({password:'test-only-password'})})).headers.get('set-cookie');assert.match(maxAge,/Max-Age=31536000/);
  // Passkeys: público só o necessário para entrar; cadastro exige sessão.
@@ -46,7 +54,7 @@ test('API: autenticação, sessão, persistência, SSE, idempotência e validaç
  assert.equal((await fetch(url+'/api/passkey/register',{method:'POST',headers:headers(),body:JSON.stringify({id:'x',rawId:'x',type:'public-key',response:{clientDataJSON:'e30',attestationObject:'oA'},clientExtensionResults:{}})})).status,400);
  assert.deepEqual(await(await fetch(url+'/api/passkeys',{headers:headers()})).json(),[]);
  // A sessão continua válida depois de reiniciar: a chave de assinatura fica no banco.
- await stop(proc.child);proc=await launch(dir);url=proc.url;state=await(await fetch(url+'/api/state',{headers:headers()})).json();assert.equal(state.tasks.task.text,'Teste');
+ await stop(proc.child);proc=await launch(dir);url=proc.url;state=await(await fetch(url+'/api/state',{headers:headers()})).json();assert.equal(state.tasks.task.text,'Teste');assert.equal(state.billRules.recurring.every,2);assert.equal(state.bills.b2.skipped,false);assert.equal(state.bills.therapy.excluded,'2026-10-29');assert.equal(state.bills.therapy.unitAmount,20000);
  }finally{if(proc?.child.exitCode===null)await stop(proc.child);await rm(dir,{recursive:true,force:true})}});
 test('limite de login por cliente atrás do proxy',async()=>{const dir=await mkdtemp(join(tmpdir(),'notas-test-'));const child=spawn(process.execPath,['server.mjs'],{env:{...process.env,PORT:'0',DATA_DIR:dir,APP_PASSWORD:'test-only-password',TRUST_PROXY:'1'},stdio:['ignore','pipe','pipe']});try{
  const url=await new Promise((resolve,reject)=>{child.stdout.on('data',b=>{const m=b.toString().match(/http:\/\/[^\s]+/);if(m)resolve(m[0])});child.once('exit',code=>reject(Error(`exit ${code}`)))});
@@ -55,3 +63,51 @@ test('limite de login por cliente atrás do proxy',async()=>{const dir=await mkd
  assert.equal(await attempt('203.0.113.7, 198.51.100.1'),429,'só o último salto conta; o cliente não escolhe o próprio IP');
  assert.equal(await attempt('198.51.100.2'),401,'outro cliente não fica bloqueado');
 }finally{await stop(child);await rm(dir,{recursive:true,force:true})}});
+
+test('API rejeita atomicamente edição offline após encerramento remoto e aceita retry idempotente', async () => {
+ const dir = await mkdtemp(join(tmpdir(), 'notas-bill-conflict-'));
+ const proc = await launch(dir);
+ try {
+  const login = await fetch(proc.url + '/api/login', {method: 'POST', body: JSON.stringify({password: 'test-only-password'})});
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const headers = {cookie, 'Content-Type': 'application/json'};
+  const getState = () => fetch(proc.url + '/api/state', {headers}).then(r => r.json());
+  const post = ops => fetch(proc.url + '/api/operations', {method: 'POST', headers, body: JSON.stringify(ops)});
+  const identified = (ops, prefix) => ops.map((op, i) => ({...op, opId: `${prefix}-${i}`}));
+  const base = {text: 'Internet', amount: 11990, due: 25, repeat: true, every: 1, done: false};
+  assert.equal((await post([
+   {opId: 'seed-oct', collection: 'bills', id: 'internet', patch: {...base, month: '2026-10'}},
+   {opId: 'seed-nov', collection: 'bills', id: 'internet-2026-11', patch: {...base, month: '2026-11'}},
+  ])).status, 200);
+  const offlineA = await getState(), deviceB = await getState();
+  const offlineBatch = identified(guardBillOps(offlineA, editBillOps(offlineA, offlineA.bills.internet, {...base, amount: 14990}, 'future')), 'offline');
+  for (const op of offlineBatch) apply(offlineA, op);
+  const offlineRollover = identified(guardBillOps(offlineA, rollover(offlineA, '2026-12-01')), 'offline-rollover');
+  const stopBatch = identified(guardBillOps(deviceB, deleteBillOps(deviceB, deviceB.bills['internet-2026-11'], 'future')), 'stop');
+  assert.equal((await post(stopBatch)).status, 200);
+  assert.equal((await post(stopBatch)).status, 200, 'retry ignora precondições dos opIds já aplicados');
+  assert.equal((await post(offlineBatch)).status, 409);
+  assert.equal((await post(offlineRollover)).status, 409, 'virada derivada da edição offline também precisa rejeitar o conflito');
+  let state = await getState();
+  assert.equal(state.billRules.internet.repeat, false);
+  assert.equal(state.bills['internet-2026-11'].skipped, true);
+  assert.equal(state.bills.internet.amount, 11990, 'nenhuma parte do gesto conflitante foi aplicada');
+  assert.equal(state.bills['internet-2026-12'], undefined);
+  assert.equal(state.months['2026-12'], undefined);
+  const freshEdit = identified(guardBillOps(state, editBillOps(state, state.bills.internet, {...base, amount: 12990, repeat: false})), 'fresh');
+  assert.equal((await post(freshEdit)).status, 200);
+  assert.equal((await getState()).bills.internet.amount, 12990);
+  // A conflict in one occurrence rejects unrelated operations in the same gesture too.
+  state = await getState();
+  const stalePayment = identified(guardBillOps(state, [{collection: 'bills', id: 'internet', patch: {done: true}}]), 'payment');
+  assert.equal((await post({opId: 'remote-payment', collection: 'bills', id: 'internet', patch: {amount: 13990}})).status, 200);
+  assert.equal((await post([...stalePayment, {opId: 'atomic-task', collection: 'tasks', id: 'atomic', patch: {text: 'Not applied'}}])).status, 409);
+  state = await getState();
+  assert.equal(state.bills.internet.done, false);
+  assert.equal(state.tasks.atomic, undefined);
+  assert.equal((await post([{opId: 'mixed-space', collection: 'shopping', id: 'i-test', patch: {text: 'Test'}}, {opId: 'mixed-private', collection: 'tasks', id: 'private', patch: {text: 'Test'}}])).status, 400);
+ } finally {
+  await stop(proc.child);
+  await rm(dir, {recursive: true, force: true});
+ }
+});

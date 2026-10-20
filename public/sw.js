@@ -1,4 +1,4 @@
-const CACHE='notas-shell-v7-__NOTAS_RELEASE__';
+const CACHE='notas-shell-v8-__NOTAS_RELEASE__';
 const FILES=['/','/index.html','/style.css','/app.js','/model.js','/navigation.js','/vendor/framework7.js','/vendor/framework7.css','/manifest.webmanifest','/icon.svg','/icon-192.png','/icon-512.png'];
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(FILES))));
 self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
