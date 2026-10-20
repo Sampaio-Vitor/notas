@@ -55,7 +55,7 @@ const visibleTabs = () => { const prefs = tabPrefs(state); return TABS.filter(([
 // ---------- Local state, outbox and sync ----------
 
 let state = initialState(), queue = [], busy = false, events = null, online = navigator.onLine, needsLogin = false, protectedServer = false;
-let passkeys = [], regOptions = null, loginOptions = null;
+let passkeys = [], regOptions = null, loginOptions = null, loginOptionsError = null;
 // Who is signed in. The local cache belongs to one person (`owner`); another
 // person signing in on the same device starts from a clean cache.
 let me = null, people = [], owner = null, sessionLoaded = false;
@@ -714,7 +714,19 @@ async function prepareRegister() {
   try { regOptions = {at: Date.now(), value: await (await api('/api/passkey/register-options', {method: 'POST'})).json()}; } catch { regOptions = null; }
 }
 async function prepareLogin() {
-  try { loginOptions = {at: Date.now(), value: await (await fetch('/api/passkey/login-options', {method: 'POST'})).json()}; } catch { loginOptions = null; }
+  loginOptions = null;
+  loginOptionsError = null;
+  try {
+    const r = await fetch('/api/passkey/login-options', {method: 'POST'});
+    const value = await r.json();
+    if (!r.ok) throw Error(value?.error === 'Origem inválida'
+      ? 'Este endereço não permite entrar. Abra o Notas pelo endereço configurado no servidor.'
+      : value?.error || 'Não foi possível preparar a passkey. Tente novamente ou entre com a senha.');
+    if (typeof value?.challenge !== 'string' || !/^[A-Za-z0-9_-]+$/.test(value.challenge)) throw Error('Não foi possível preparar a passkey. Tente novamente ou entre com a senha.');
+    loginOptions = {at: Date.now(), value};
+  } catch (e) {
+    loginOptionsError = e instanceof TypeError || e instanceof SyntaxError ? Error('Sem conexão com o servidor ou resposta inválida. Tente novamente.') : e;
+  }
 }
 async function loadPasskeys() {
   try { passkeys = await (await api('/api/passkeys')).json(); render(); } catch {}
@@ -740,7 +752,7 @@ async function createPasskey() {
 
 async function passkeyLogin() {
   if (!fresh(loginOptions)) await prepareLogin();
-  if (!loginOptions) throw Error('Sem conexão com o servidor.');
+  if (!loginOptions) throw loginOptionsError || Error('Sem conexão com o servidor.');
   const o = loginOptions.value; loginOptions = null;
   const cred = await navigator.credentials.get({publicKey: {...o, challenge: b64u.dec(o.challenge), allowCredentials: credentialIds(o.allowCredentials)}});
   const r = await fetch('/api/passkey/login', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
