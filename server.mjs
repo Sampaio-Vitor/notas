@@ -274,10 +274,14 @@ async function body(req) {
   return JSON.parse(raw || '{}');
 }
 const attempts = new Map();
+// Behind the local HTTPS proxy every socket comes from the proxy; its last X-Forwarded-For hop is the real client.
+const trustProxy = process.env.TRUST_PROXY === '1';
+const clientIp = req => (trustProxy && String(req.headers['x-forwarded-for'] || '').split(',').pop().trim()) || req.socket.remoteAddress;
 function limited(req) {
-  const ip = req.socket.remoteAddress;
+  const ip = clientIp(req), now = Date.now();
+  if (attempts.size > 10000) for (const [k, v] of attempts) if (now > v.until) attempts.delete(k);
   let a = attempts.get(ip);
-  if (!a || Date.now() > a.until) { a = {count: 0, until: Date.now() + 60000}; attempts.set(ip, a); }
+  if (!a || now > a.until) { a = {count: 0, until: now + 60000}; attempts.set(ip, a); }
   return ++a.count > 10;
 }
 

@@ -40,3 +40,10 @@ test('API: autenticação, sessão, persistência, SSE, idempotência e validaç
  // A sessão continua válida depois de reiniciar: a chave de assinatura fica no banco.
  await stop(proc.child);proc=await launch(dir);url=proc.url;state=await(await fetch(url+'/api/state',{headers:headers()})).json();assert.equal(state.tasks.task.text,'Teste');
  }finally{if(proc?.child.exitCode===null)await stop(proc.child);await rm(dir,{recursive:true,force:true})}});
+test('limite de login por cliente atrás do proxy',async()=>{const dir=await mkdtemp(join(tmpdir(),'notas-test-'));const child=spawn(process.execPath,['server.mjs'],{env:{...process.env,PORT:'0',DATA_DIR:dir,APP_PASSWORD:'test-only-password',TRUST_PROXY:'1'},stdio:['ignore','pipe','pipe']});try{
+ const url=await new Promise((resolve,reject)=>{child.stdout.on('data',b=>{const m=b.toString().match(/http:\/\/[^\s]+/);if(m)resolve(m[0])});child.once('exit',code=>reject(Error(`exit ${code}`)))});
+ const attempt=xff=>fetch(url+'/api/login',{method:'POST',headers:{'x-forwarded-for':xff},body:JSON.stringify({password:'wrong'})}).then(r=>r.status);
+ for(let i=0;i<10;i++)assert.equal(await attempt('203.0.113.9, 198.51.100.1'),401);
+ assert.equal(await attempt('203.0.113.7, 198.51.100.1'),429,'só o último salto conta; o cliente não escolhe o próprio IP');
+ assert.equal(await attempt('198.51.100.2'),401,'outro cliente não fica bloqueado');
+}finally{await stop(child);await rm(dir,{recursive:true,force:true})}});

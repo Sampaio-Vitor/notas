@@ -13,6 +13,8 @@ services:
       # Agentes no /mcp, só com a lista de compras: id:token, separados por vírgula.
       MCP_TOKENS: ${MCP_TOKENS:-}
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Defina PUBLIC_ORIGIN com o endereço HTTPS}
+      # A porta só existe no loopback: todo acesso passa pelo proxy HTTPS local.
+      TRUST_PROXY: "1"
       TZ: America/Sao_Paulo
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4329/healthz').then(async r=>{if(!r.ok || !(await r.json()).ok)process.exit(1)}).catch(()=>process.exit(1))"]
