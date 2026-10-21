@@ -41,6 +41,7 @@ const ICONS = {
   rep: '<svg viewBox="0 0 16 16" aria-label="Repete"><path d="M3 7a5 5 0 0 1 8.6-3.4L13 5M13 2v3h-3M13 9a5 5 0 0 1-8.6 3.4L3 11M3 14v-3h3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   check: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   plus: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  eye: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 10s3-5.5 8-5.5S18 10 18 10s-3 5.5-8 5.5S2 10 2 10z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="10" cy="10" r="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>',
   search: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M13 13l4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
   hoje: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 12.2l2.4 2.4 4.6-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   backlog: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
@@ -1065,6 +1066,7 @@ document.addEventListener('click', e => {
   else if ('find' in d) openFinder(d.find);
   else if (d.finderI) runFinder(Number(d.finderI));
   else if (d.ctx) menuAction(d);
+  else if ('privateWeek' in d) { privateWeek = !privateWeek; render(); }
   else if (d.week) { weekStart = d.week === '0' ? null : addDays(weekStart || mondayOf(today()), 7 * Number(d.week)); render(); }
   else if ('deleteSelected' in d) { deleteTasks([...selected]); selected.clear(); render(); }
   else if ('clearSelection' in d) { selected.clear(); render(); }
@@ -1215,7 +1217,9 @@ const desktop = () => wideQuery.matches;
 wideQuery.addEventListener('change', () => { selecting = false; selected.clear(); cursor = null; closeFinder(); closeMenu(); render(); });
 const KEY = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? '⌘' : 'Ctrl+';
 // Week shown in Reuniões (its Monday; null follows today), keyboard cursor, range anchor.
-let weekStart = null, cursor = null, anchor = null, finder = null, dragIds = null;
+// The private week paints every meeting as the same dark block, with no text and no
+// current-time line, so a screenshot shows only when you are busy.
+let weekStart = null, privateWeek = false, cursor = null, anchor = null, finder = null, dragIds = null;
 
 // Sections have no color of their own; the order in Ajustes picks one.
 const SECTION_COLORS = ['#64d2ff', '#bf5af2', '#ff9f0a', '#30d158', '#ff375f', '#5e5ce6', '#ffd60a', '#ac8e68'];
@@ -1313,17 +1317,18 @@ function deskReunioes() {
   const block = (m, date) => {
     const start = minutes(m.time), gone = m.done || date < today() || (date === today() && start + 30 <= now);
     const open = m.repeats ? `data-edit-repeat="${m.id}"` : `data-edit-task="${m.id}" data-row="${m.id}"`;
+    if (privateWeek) return `<button class="d-evt is-private" ${open} aria-label="Ocupado, ${shortTime(m.time)}" style="top:${y(start) + 1}px;height:${HOUR / 2 - 2}px;left:calc(${m.lane} * 100% / ${m.lanes} + 3px);width:calc(100% / ${m.lanes} - 6px)"></button>`;
     return `<button class="d-evt ${gone ? 'is-past' : ''} ${m.done ? 'is-done' : ''}" ${open} style="--c:${sectionColor(m.section)};top:${y(start) + 1}px;height:${HOUR / 2 - 2}px;left:calc(${m.lane} * 100% / ${m.lanes} + 3px);width:calc(100% / ${m.lanes} - 6px)" title="${esc(m.text)}, ${shortTime(m.time)} · ${esc(sectionName(m.section))}${m.repeats ? ` · ${esc(repeatLabel(m))}` : ''}"><b>${esc(m.text)}</b><span>${shortTime(m.time)}</span></button>`;
   };
   const head = `<div class="d-wk-h" style="${cols}"><span></span>${days.map(d => `<div class="d-wk-day ${d.date === today() ? 'is-today' : ''}"><small>${WEEK[weekday(d.date)].slice(0, 3)}</small><b>${Number(d.date.slice(8, 10))}</b></div>`).join('')}</div>`;
-  const untimed = days.some(d => d.list.some(m => !m.time))
+  const untimed = !privateWeek && days.some(d => d.list.some(m => !m.time))
     ? `<div class="d-wk-all" style="${cols}"><span>Sem horário</span>${days.map(d => `<div>${d.list.filter(m => !m.time).map(m => `<button class="d-chip d-evt-chip ${m.done ? 'is-done' : ''}" ${m.repeats ? `data-edit-repeat="${m.id}"` : `data-edit-task="${m.id}"`} style="--c:${sectionColor(m.section)}">${esc(m.text)}</button>`).join('')}</div>`).join('')}</div>` : '';
   const hours = [];
   for (let m = first + 60; m < last; m += 60) hours.push(`<span style="top:${y(m)}px">${clock(m)}</span>`);
-  const nowLine = days.some(d => d.date === today()) && now >= first && now <= last;
+  const nowLine = !privateWeek && days.some(d => d.date === today()) && now >= first && now <= last;
   const grid = `<div class="d-wk-b" style="${cols};height:${y(last)}px"><div class="d-wk-gut">${hours.join('')}${nowLine ? `<span class="is-now" style="top:${y(now)}px">${clock(now)}</span>` : ''}</div>
     ${days.map(d => `<div class="d-wk-col ${d.date === today() ? 'is-today' : ''}" data-slot-day="${d.date}" data-first="${first}" data-hour="${HOUR}" style="--hour:${HOUR}px">${meetingLanes(d.list.filter(m => m.time).map(m => ({...m, start: minutes(m.time)}))).map(m => block(m, d.date)).join('')}${d.date === today() && nowLine ? `<div class="d-wk-now" style="top:${y(now)}px"></div>` : ''}</div>`).join('')}${nowLine ? `<div class="d-wk-now-all" style="top:${y(now)}px"></div>` : ''}</div>`;
-  const end = `<div class="d-pager"><button class="d-tool" data-week="-1" aria-label="Semana anterior">‹</button><button class="d-tool" data-week="0" ${weekStart ? '' : 'disabled'}>Esta semana</button><button class="d-tool" data-week="1" aria-label="Próxima semana">›</button></div>${deskAdd('Nova reunião', 'data-new-meeting')}`;
+  const end = `<div class="d-pager"><button class="d-tool" data-week="-1" aria-label="Semana anterior">‹</button><button class="d-tool" data-week="0" ${weekStart ? '' : 'disabled'}>Esta semana</button><button class="d-tool" data-week="1" aria-label="Próxima semana">›</button></div><button class="d-tool ${privateWeek ? 'is-on' : ''}" data-private-week aria-pressed="${privateWeek}" title="${privateWeek ? 'Mostrar reuniões' : 'Só mostrar horários ocupados'}">${ICONS.eye}</button>${deskAdd('Nova reunião', 'data-new-meeting')}`;
   return `${toolbar('Reuniões', weekLabel(days[0].date, days.at(-1).date), end)}<div class="d-week">${statusHtml()}${head}${untimed}${grid}</div>`;
 }
 
