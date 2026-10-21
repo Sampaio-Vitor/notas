@@ -268,6 +268,7 @@ const formats = {
   weekdays: v => /^[0-6]{0,7}$/.test(v) && new Set(v).size === v.length,
   starts: v => v === '' || (/^\d{4}-\d{2}-\d{2}$/.test(v) && Number.isFinite(Date.parse(`${v}T12:00:00Z`)) && new Date(`${v}T12:00:00Z`).toISOString().slice(0, 10) === v),
   excluded: v => v === '' || (v.split(',').length <= 31 && v.split(',').every(date => /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(date))),
+  date: v => v === '' || (/^\d{4}-\d{2}-\d{2}$/.test(v) && Number.isFinite(Date.parse(`${v}T12:00:00Z`)) && new Date(`${v}T12:00:00Z`).toISOString().slice(0, 10) === v),
   order: v => Number.isInteger(v), weekday: v => Number.isInteger(v) && v <= 6,
 };
 function validate(op) {

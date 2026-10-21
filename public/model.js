@@ -243,6 +243,13 @@ export function carried(state, task) {
   return live(state, 'tasks').some(x => x.id !== task.id && origin(x) === origin(task) && x.date > task.date);
 }
 
+// Tasks given a later date wait for their day, soonest first; on the day they
+// are ordinary tasks of that day, so nothing has to copy or generate them.
+export function scheduledTasks(state, today) {
+  return live(state, 'tasks').filter(t => t.date > today)
+    .sort((a, b) => a.date.localeCompare(b.date) || (a.time || '99').localeCompare(b.time || '99'));
+}
+
 export function pendingOn(state, date) {
   return live(state, 'tasks').filter(t => t.date === date && !t.done && !t.repeat && !t.meeting && !carried(state, t));
 }

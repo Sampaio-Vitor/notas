@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {initialState, apply, rollover, migrate, repeatsOn, lastPending, pendingOn, carryOps, sortedSections, itemKey, itemId, listed, tabPrefs, shiftMonth, scheduledBills, repeatingBills} from '../public/model.js';
+import {initialState, apply, rollover, migrate, repeatsOn, lastPending, pendingOn, carryOps, scheduledTasks, sortedSections, itemKey, itemId, listed, tabPrefs, shiftMonth, scheduledBills, repeatingBills} from '../public/model.js';
 
 const run = (s, ops) => ops.forEach(op => apply(s, op));
 
@@ -81,6 +81,23 @@ test('pendências do último dia: ignora repetições, some depois de trazer ou 
   run(t, [{collection: 'tasks', id: 'a', patch: {text: 'X', section: 's1', date: '2026-10-16', done: false}}]);
   run(t, [{collection: 'days', id: '2026-10-16', patch: {date: '2026-10-16', reviewed: true}}]);
   assert.equal(lastPending(t, '2026-10-19'), null);
+});
+
+test('tarefa com data futura espera o dia e então vira tarefa comum do dia', () => {
+  const s = initialState();
+  run(s, [
+    {collection: 'tasks', id: 'k', patch: {text: 'Kickoff', section: 's1', date: '2026-11-05', time: '14:00', meeting: true, done: false}},
+    {collection: 'tasks', id: 'd', patch: {text: 'Dentista', section: 's1', date: '2026-10-26', time: '', done: false}},
+    {collection: 'tasks', id: 'h', patch: {text: 'Hoje', section: 's1', date: '2026-10-21', done: false}},
+    {collection: 'tasks', id: 'b', patch: {text: 'Backlog', section: 's1', date: '', done: false}},
+  ]);
+  assert.deepEqual(scheduledTasks(s, '2026-10-21').map(t => t.id), ['d', 'k'], 'só datas futuras, a mais próxima primeiro');
+  assert.equal(lastPending(s, '2026-10-21'), null, 'data futura não conta como pendência');
+  assert.equal(rollover(s, '2026-11-05').some(op => op.collection === 'tasks'), false, 'nada é copiado no dia');
+  assert.deepEqual(scheduledTasks(s, '2026-11-05').map(t => t.id), [], 'no dia sai de Agendadas');
+  assert.deepEqual(lastPending(s, '2026-11-06'), null, 'reunião não feita não vira pendência');
+  run(s, [{collection: 'tasks', id: 'k', patch: {meeting: false}}]);
+  assert.deepEqual(lastPending(s, '2026-11-06').tasks.map(t => t.id), ['k'], 'tarefa não feita vira pendência como as outras');
 });
 
 test('seções seguem a ordem salva; antigas sem ordem vão para o fim', () => {

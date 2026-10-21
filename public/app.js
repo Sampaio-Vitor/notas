@@ -3,7 +3,7 @@ import {createNavigation} from './navigation.js';
 const report = message => { try { navigator.sendBeacon?.('/api/client-log', new Blob([JSON.stringify({message})], {type: 'application/json'})); } catch {} };
 addEventListener('error', e => report(`${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`));
 addEventListener('unhandledrejection', e => report(`promise: ${e.reason?.stack || e.reason}`));
-import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot} from './model.js';
+import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot} from './model.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -167,6 +167,9 @@ const meetingsApart = () => tabPrefs(state).reunioes;
 const todayTasks = () => tasksOn(today()).filter(t => !(meetingsApart() && t.meeting));
 const todayMeetings = () => tasksOn(today()).filter(t => t.meeting);
 const backlog = () => live(state, 'tasks').filter(t => t.date === '');
+const scheduled = () => scheduledTasks(state, today());
+// "qui, 5 de nov"
+const dayShort = date => `${WEEK[weekday(date)].slice(0, 3).toLowerCase()}, ${Number(date.slice(8, 10))} de ${MONTHS[Number(date.slice(5, 7)) - 1].slice(0, 3)}`;
 const byTime = list => [...list].sort((a, b) => (a.time ? 0 : 1) - (b.time ? 0 : 1) || (a.time || '').localeCompare(b.time || ''));
 const doneCount = list => list.filter(t => t.done).length;
 function lastSection() {
@@ -244,27 +247,31 @@ function viewHoje() {
 
 function viewReunioes() {
   const now = todayMeetings(), days = Array.from({length: 6}, (_, i) => addDays(today(), i + 1));
+  const once = scheduled().filter(t => t.meeting), horizon = days.at(-1);
+  const row = (item, date) => `<div class="n-row n-plain"><button class="n-text n-two" ${item.repeats ? `data-edit-repeat="${item.id}"` : `data-edit-task="${item.id}"`}><span>${esc(item.text)}</span><span class="n-meta">${date ? `<span class="n-accent">${dayShort(date)}</span> · ` : ''}${esc(sectionName(item.section))}</span></button>${item.time || item.repeats ? `<span class="n-meta">${item.repeats ? ICONS.rep : ''}${esc(shortTime(item.time))}</span>` : ''}</div>`;
+  const group = (title, rows, count) => `<section><div class="n-group-h"><h2>${title}</h2><span>${count}</span></div><div class="n-list">${rows}</div></section>`;
   const upcoming = days.map(date => {
-    const list = live(state, 'repeats').filter(r => r.meeting && repeatsOn(r, date)).sort((a, b) => (a.time || '99').localeCompare(b.time || '99'));
-    if (!list.length) return '';
-    const rows = list.map(r => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-repeat="${r.id}"><span>${esc(r.text)}</span><span class="n-meta">${esc(sectionName(r.section))}</span></button>${r.time ? `<span class="n-meta">${esc(shortTime(r.time))}</span>` : ''}</div>`).join('');
-    return `<section><div class="n-group-h"><h2>${cap(nextDayLabel(date))}</h2><span>${list.length}</span></div><div class="n-list">${rows}</div></section>`;
+    const list = [...live(state, 'repeats').filter(r => r.meeting && repeatsOn(r, date)).map(r => ({...r, repeats: true})), ...once.filter(t => t.date === date)].sort((a, b) => (a.time || '99').localeCompare(b.time || '99'));
+    return list.length ? group(cap(nextDayLabel(date)), list.map(item => row(item)).join(''), list.length) : '';
   }).join('');
+  const later = once.filter(t => t.date > horizon);
+  const laterGroup = later.length ? group('Mais adiante', later.map(t => row(t, t.date)).join(''), later.length) : '';
   const today_ = now.length
     ? `<section><div class="n-group-h"><h2>Hoje</h2><span>${doneCount(now)} de ${now.length}</span></div><div class="n-list">${byTime(now).map(t => taskRow(t)).join('')}</div></section>`
     : '<div class="n-empty"><p>Nenhuma reunião hoje.</p></div>';
-  return `${statusHtml()}<div class="n-top"><span></span></div><h1 class="n-title">Reuniões</h1><p class="n-sub">${longDate(today())}</p>${today_}${upcoming}`;
+  return `${statusHtml()}<div class="n-top"><span></span></div><h1 class="n-title">Reuniões</h1><p class="n-sub">${longDate(today())}</p>${today_}${upcoming}${laterGroup}`;
 }
 
 function viewBacklog() {
-  const tasks = backlog();
+  const tasks = backlog(), waiting = selecting ? [] : scheduled().filter(t => !(meetingsApart() && t.meeting));
+  const agendadas = waiting.length ? `<section><div class="n-group-h"><h2>Agendadas</h2><span>${waiting.length}</span></div><div class="n-list">${waiting.map(t => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-task="${t.id}"><span>${esc(t.text)}</span><span class="n-meta"><span class="n-accent">${dayShort(t.date)}</span> · ${esc(sectionName(t.section))}</span></button>${t.time ? `<span class="n-meta">${esc(shortTime(t.time))}</span>` : ''}</div>`).join('')}</div></section>` : '';
   const head = selecting
     ? `<div class="n-top"><span></span><button class="n-link" data-select-mode>Cancelar</button></div><h1 class="n-title">Backlog</h1><p class="n-sub">${selected.size ? plural(selected.size, 'selecionada', 'selecionadas') : 'Toque nas tarefas para selecionar'}</p>`
     : `<div class="n-top"><span></span>${tasks.length ? '<button class="n-link" data-select-mode>Selecionar</button>' : ''}</div><h1 class="n-title">Backlog</h1>`;
   const body = tasks.length
     ? sectionGroups(tasks, selecting ? 'select' : 'swipe', list => list.length)
-    : '<div class="n-empty"><p>Backlog vazio.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-task>Nova tarefa</button></div></div>';
-  return `${statusHtml()}${head}${body}`;
+    : waiting.length ? '' : '<div class="n-empty"><p>Backlog vazio.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-task>Nova tarefa</button></div></div>';
+  return `${statusHtml()}${head}${agendadas}${body}`;
 }
 
 function billsSegment() {
@@ -455,7 +462,7 @@ function render() {
   let float = '';
   if (tab === 'backlog' && selecting) float = `<button class="n-btn n-yellow n-wide" data-move-selected ${selected.size ? '' : 'disabled'}>${selected.size ? `Mover ${selected.size} para hoje` : 'Selecione tarefas'}</button>`;
   else if (tab === 'reunioes') float = `<button class="n-quick" data-new-meeting>${ICONS.plus}<span>Nova reunião</span></button>`;
-  else if ((tab === 'hoje' && todayTasks().length) || (tab === 'backlog' && backlog().length)) float = `<button class="n-quick" data-new-task>${ICONS.plus}<span>Nova tarefa</span></button>`;
+  else if ((tab === 'hoje' && todayTasks().length) || (tab === 'backlog' && (backlog().length || scheduled().length))) float = `<button class="n-quick" data-new-task>${ICONS.plus}<span>Nova tarefa</span></button>`;
   $('#float').innerHTML = float;
   document.body.dataset.float = float ? 'yes' : 'no';
   if (sub && document.contains(sub.el)) {
@@ -508,20 +515,23 @@ function taskSheet({id, repeatId, when, meeting: asMeeting} = {}) {
   const editingRepeat = !!repeatId;
   const source = editingRepeat ? repeat : task;
   const section = source?.section && state.sections[source.section] && !state.sections[source.section].deleted ? source.section : lastSection();
-  const isBacklog = editingRepeat ? false : task ? task.date === '' : when === 'backlog';
+  // today, later (a chosen future day) or backlog
+  const initialWhen = editingRepeat ? 'today' : task ? (task.date === '' ? 'backlog' : task.date > today() ? 'later' : 'today') : when;
+  const isBacklog = initialWhen === 'backlog';
   const isMeeting = source ? !!source.meeting : !!asMeeting;
   const kind = repeatKind(repeat);
   const days = repeat && kind !== 'monthly' ? repeat.days : '12345';
-  const title = editingRepeat ? 'Editar repetição' : task ? 'Editar tarefa' : 'Nova tarefa';
+  const title = editingRepeat ? 'Editar repetição' : task ? 'Editar tarefa' : isMeeting ? 'Nova reunião' : 'Nova tarefa';
   const dayOptions = Array.from({length: 31}, (_, i) => `<option value="${i + 1}" ${(repeat?.monthDay || Number(today().slice(8, 10))) === i + 1 ? 'selected' : ''}>${i + 1}</option>`).join('');
   openSheet(`<form class="n-form" id="task-form">${sheetTop(title)}
     <textarea name="text" rows="1" required maxlength="10000" placeholder="Tarefa" aria-label="Tarefa" ${task || editingRepeat ? '' : 'autofocus'}>${esc(source?.text || '')}</textarea>
     <fieldset class="n-fieldset"><legend>Seção</legend><div class="n-chips">${sections().map(s => `<label class="n-chip"><input type="radio" name="section" value="${s.id}" ${s.id === section ? 'checked' : ''}><span>${esc(s.name)}</span></label>`).join('')}</div></fieldset>
-    ${editingRepeat ? '' : `<fieldset class="n-seg" ${tabPrefs(state).backlog || isBacklog ? '' : 'hidden'}><legend class="n-sr">Quando</legend><label><input type="radio" name="when" value="today" ${isBacklog ? '' : 'checked'}><span>Hoje</span></label><label><input type="radio" name="when" value="backlog" ${isBacklog ? 'checked' : ''}><span>Backlog</span></label></fieldset>`}
+    ${editingRepeat ? '' : `<fieldset class="n-seg"><legend class="n-sr">Quando</legend>${[['today', 'Hoje'], ['later', 'Outro dia'], ['backlog', 'Backlog']].filter(([v]) => v !== 'backlog' || tabPrefs(state).backlog || isBacklog).map(([v, l]) => `<label><input type="radio" name="when" value="${v}" ${v === initialWhen ? 'checked' : ''}><span>${l}</span></label>`).join('')}</fieldset>`}
     <div class="n-opts" data-today-only>
+      <label class="n-opt" data-later-only>Data<input type="date" name="date" min="${addDays(today(), 1)}" value="${initialWhen === 'later' ? task.date : addDays(today(), 1)}"></label>
       <label class="n-opt">Reunião<input type="checkbox" class="n-switch" name="meeting" ${isMeeting ? 'checked' : ''}></label>
       <label class="n-opt">Horário<input type="time" name="time" value="${esc(source?.time || '')}"></label>
-      <label class="n-opt">Repetir<select name="rule">
+      <label class="n-opt" data-repeat-only>Repetir<select name="rule">
         ${[['none', 'Não repete'], ['daily', 'Todo dia'], ['weekdays', 'Dias úteis'], ['custom', 'Dias escolhidos'], ['monthly', 'Todo mês']].filter(([v]) => !editingRepeat || v !== 'none').map(([v, l]) => `<option value="${v}" ${v === kind ? 'selected' : ''}>${l}</option>`).join('')}
       </select></label>
       <fieldset class="n-days" data-days><legend class="n-sr">Dias da semana</legend>${[0, 1, 2, 3, 4, 5, 6].map(d => `<label><input type="checkbox" name="day" value="${d}" ${days.includes(String(d)) ? 'checked' : ''}><span aria-label="${WEEK[d]}">${WEEK_INITIAL[d]}</span></label>`).join('')}</fieldset>
@@ -531,11 +541,15 @@ function taskSheet({id, repeatId, when, meeting: asMeeting} = {}) {
   </form>`, () => {
     const form = $('#task-form'), text = form.elements.text;
     autosize(text); text.addEventListener('input', () => autosize(text));
+    const whenValue = () => editingRepeat ? 'today' : form.elements.when.value;
     const update = () => {
-      const onToday = editingRepeat || form.elements.when.value === 'today', rule = form.elements.rule.value;
-      $('[data-today-only]', form).hidden = !onToday;
-      $('[data-days]', form).hidden = !['daily', 'weekdays', 'custom'].includes(rule);
-      $('[data-month-day]', form).hidden = rule !== 'monthly';
+      const chosen = whenValue(), rule = form.elements.rule.value, repeats = chosen === 'today';
+      $('[data-today-only]', form).hidden = chosen === 'backlog';
+      $('[data-later-only]', form).hidden = chosen !== 'later';
+      // A task on another day happens once; repeating starts from Hoje.
+      $('[data-repeat-only]', form).hidden = !repeats;
+      $('[data-days]', form).hidden = !repeats || !['daily', 'weekdays', 'custom'].includes(rule);
+      $('[data-month-day]', form).hidden = !repeats || rule !== 'monthly';
     };
     form.elements.rule.addEventListener('change', () => {
       const preset = {daily: '0123456', weekdays: '12345'}[form.elements.rule.value];
@@ -554,16 +568,21 @@ function taskSheet({id, repeatId, when, meeting: asMeeting} = {}) {
       if (!value) return text.focus();
       const sectionId = form.elements.section.value || lastSection();
       localStorage.setItem('notas-section', sectionId);
-      const onToday = editingRepeat || form.elements.when.value === 'today';
-      const time = onToday ? form.elements.time.value : '';
-      const meeting = onToday && form.elements.meeting.checked;
+      const chosenWhen = whenValue(), onToday = chosenWhen === 'today', dated = chosenWhen !== 'backlog';
+      const later = chosenWhen === 'later' ? form.elements.date.value : '';
+      if (chosenWhen === 'later' && !(later > today())) { toast('Escolha uma data a partir de amanhã.'); return form.elements.date.focus(); }
+      const time = dated ? form.elements.time.value : '';
+      const meeting = dated && form.elements.meeting.checked;
       const rule = form.elements.rule.value;
       const chosen = [...form.elements.day].filter(b => b.checked).map(b => b.value).join('');
       const wantsRepeat = onToday && (rule === 'monthly' || (rule !== 'none' && chosen));
       const ops = [];
       let rid = repeatId || task?.repeat || '';
       let template = null;
-      if (wantsRepeat) {
+      if (later && task?.repeat) {
+        // Moving one occurrence to another day leaves the repeat itself alone.
+        rid = '';
+      } else if (wantsRepeat) {
         rid ||= uid();
         template = {text: value, section: sectionId, time, days: rule === 'monthly' ? '' : chosen, monthDay: rule === 'monthly' ? Number(form.elements.monthDay.value) : 0, meeting};
         ops.push({collection: 'repeats', id: rid, patch: template});
@@ -571,10 +590,13 @@ function taskSheet({id, repeatId, when, meeting: asMeeting} = {}) {
         ops.push({collection: 'repeats', id: rid, patch: {deleted: true}});
         rid = '';
       }
-      let message = '';
+      let message = later && later !== task?.date ? `Agendada para ${nextDayLabel(later)}.` : '';
       if (!editingRepeat) {
         if (task) {
-          ops.push({collection: 'tasks', id: task.id, patch: {text: value, section: sectionId, time, meeting, repeat: rid, date: onToday ? (task.date || today()) : ''}});
+          const date = later || (onToday ? (task.date && task.date <= today() ? task.date : today()) : '');
+          ops.push({collection: 'tasks', id: task.id, patch: {text: value, section: sectionId, time, meeting, repeat: rid, date}});
+        } else if (later) {
+          ops.push({collection: 'tasks', id: uid(), patch: {text: value, section: sectionId, time, meeting, repeat: '', date: later, done: false}});
         } else if (wantsRepeat && !repeatsOn(template, today())) {
           const next = nextOccurrence(template);
           message = next ? `Repete a partir de ${nextDayLabel(next)}.` : '';
