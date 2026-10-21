@@ -3,7 +3,7 @@ import {createNavigation} from './navigation.js';
 const report = message => { try { navigator.sendBeacon?.('/api/client-log', new Blob([JSON.stringify({message})], {type: 'application/json'})); } catch {} };
 addEventListener('error', e => report(`${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`));
 addEventListener('unhandledrejection', e => report(`promise: ${e.reason?.stack || e.reason}`));
-import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot, parseQuickTask, meetingLanes} from './model.js';
+import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, parseQuickTask, meetingLanes} from './model.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -319,10 +319,21 @@ function billsSegment() {
 const billActions = (b, catalog = false) => `<button class="n-bill-more" data-bill-actions="${esc(b.id)}" ${catalog ? 'data-catalog="true"' : ''} aria-label="Ações de ${esc(b.text)}">•••</button>`;
 const catalogBill = id => billCatalog(state, today().slice(0, 7)).find(b => b.id === id);
 const billDate = b => b.due ? `${Math.min(b.due, new Date(Number(b.month.slice(0, 4)), Number(b.month.slice(5, 7)), 0).getDate())} de ${MONTHS[Number(b.month.slice(5, 7)) - 1]} de ${b.month.slice(0, 4)}` : monthName(b.month);
-const billCalcLabel = b => b.calcMode === 'occurrence' ? `${plural(billIncludedDates(b).length, 'sessão', 'sessões')} × ${money(b.unitAmount)}` : '';
+const monthOf = month => MONTHS[Number(month.slice(5, 7)) - 1];
+const billCalcLabel = b => b.calcMode === 'occurrence' ? `${plural(billIncludedDates(b).length, 'sessão', 'sessões')}${b.lag === 1 ? ` de ${monthOf(billSessionMonth(b))}` : ''} × ${money(b.unitAmount)}` : '';
+const payWhen = b => billDate(b).replace(/ de \d{4}$/, '');
+// Sessions held in `month` but paid in the next one. Kept out of the month's totals;
+// in the current month, also how much the sessions so far add up to.
+function accrualRows(month) {
+  if (month < today().slice(0, 7)) return [];
+  return accruingBills(state, month).map(b => {
+    const dates = billIncludedDates(b), held = month === today().slice(0, 7) ? dates.filter(d => d <= today()).length : null;
+    return {...b, held, progress: held === null ? plural(dates.length, 'sessão prevista', 'sessões previstas') : `${held} de ${plural(dates.length, 'sessão', 'sessões')} até hoje · ${money(held * b.unitAmount)}`};
+  });
+}
 function allBillRows() {
   const list = billCatalog(state, today().slice(0, 7)).filter(b => itemKey(b.text).includes(itemKey(billSearch)) && (billFilter === 'all' || b.recurring === (billFilter === 'recurring')));
-  return `<p class="n-note">${plural(list.length, 'conta', 'contas')} · sem limite de data</p>${list.length ? `<div class="n-list">${list.map(b => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-bill="${esc(b.id)}" data-catalog="true"><span>${esc(b.text)}</span><span class="n-meta">${b.recurring ? everyLabel(billEvery(billRule(state, b))) : 'Não repete'}${b.calcMode === 'occurrence' ? ` · ${money(b.unitAmount)}/sessão` : ''}</span><span class="n-meta n-accent">${b.month < today().slice(0, 7) ? 'Pendente' : 'Próxima'}: ${billDate(b)}</span></button><span class="n-amount">${money(b.amount)}</span>${billActions(b, true)}</div>`).join('')}</div>` : `<div class="n-empty"><p>${billSearch || billFilter !== 'all' ? 'Nenhuma conta encontrada.' : 'Nenhuma conta cadastrada.'}</p>${!billSearch && billFilter === 'all' ? '<button class="n-btn n-yellow" data-new-bill>Adicionar conta</button>' : ''}</div>`}`;
+  return `<p class="n-note">${plural(list.length, 'conta', 'contas')} · sem limite de data</p>${list.length ? `<div class="n-list">${list.map(b => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-bill="${esc(b.id)}" data-catalog="true"><span>${esc(b.text)}</span><span class="n-meta">${b.recurring ? everyLabel(billEvery(billRule(state, b))) : 'Não repete'}${b.calcMode === 'occurrence' ? ` · ${money(b.unitAmount)}/sessão${b.lag === 1 ? ' · paga no mês seguinte' : ''}` : ''}</span><span class="n-meta n-accent">${b.month < today().slice(0, 7) ? 'Pendente' : 'Próxima'}: ${billDate(b)}</span></button><span class="n-amount">${money(b.amount)}</span>${billActions(b, true)}</div>`).join('')}</div>` : `<div class="n-empty"><p>${billSearch || billFilter !== 'all' ? 'Nenhuma conta encontrada.' : 'Nenhuma conta cadastrada.'}</p>${!billSearch && billFilter === 'all' ? '<button class="n-btn n-yellow" data-new-bill>Adicionar conta</button>' : ''}</div>`}`;
 }
 function viewAllBills() {
   return `${statusHtml()}<div class="n-top"><span></span><button class="n-icon" data-new-bill aria-label="Adicionar conta">${ICONS.plus}</button></div><h1 class="n-title">Contas</h1>${billsSegment()}${allBillsBody()}`;
@@ -363,10 +374,11 @@ function viewContas() {
   if (billsView === 'todas') return viewAllBills();
   if (billsView === 'agendadas') return viewAgendadas();
   const current = today().slice(0, 7), prev = addMonths(billMonth, -1), next = addMonths(billMonth, 1);
-  const {real: bills, projected} = monthBills(billMonth);
+  const {real: bills, projected} = monthBills(billMonth), accruing = accrualRows(billMonth);
   const sortDue = list => [...list].sort((a, b) => (a.due || 99) - (b.due || 99) || a.text.localeCompare(b.text));
   const unpaid = sortDue(bills.filter(b => !b.done)), paid = sortDue(bills.filter(b => b.done));
   const left = unpaid.reduce((n, b) => n + (b.amount || 0), 0);
+  const accrual = accruing.length ? `<div class="n-group-h"><h2>Acumulando</h2></div><div class="n-list">${accruing.map(b => `<div class="n-row n-bill-row n-plain"><span class="n-text n-two"><span>${esc(b.text)}</span><span class="n-meta">${b.progress}</span><span class="n-meta n-accent">Vence em ${payWhen(b)}</span></span><span class="n-amount">${money(b.amount)}</span></div>`).join('')}</div><p class="n-note">Sessões de ${monthOf(billMonth)} pagas no mês seguinte. Não entram no total deste mês.</p>` : '';
   const nowDay = Number(today().slice(8, 10));
   // Due day (red when late) plus, for bills that are not monthly, how often they come back.
   const dueMeta = b => {
@@ -378,20 +390,22 @@ function viewContas() {
   };
   const row = b => `<div class="n-row n-bill-row ${b.done ? 'is-done' : ''}"><button class="n-check" data-toggle="${esc(b.id)}" data-collection="bills" aria-pressed="${!!b.done}" aria-label="${b.done ? 'Desmarcar' : 'Marcar como paga'} ${esc(b.text)}">${ICONS.check}</button><button class="n-text n-two" data-edit-bill="${esc(b.id)}"><span>${esc(b.text)}</span>${dueMeta(b)}${b.calcMode === 'occurrence' ? `<span class="n-meta">${billCalcLabel(b)}</span>` : ''}</button><span class="n-amount">${money(b.amount)}</span>${billActions(b)}</div>`;
   const top = `<div class="n-top"><button class="n-link" data-month="${prev}">‹ ${monthName(prev)}</button><span class="n-top-end"><button class="n-link" data-month="${next}">${monthName(next)} ›</button><button class="n-icon" data-new-bill aria-label="Adicionar conta">${ICONS.plus}</button></span></div>`;
-  if (!bills.length && !projected.length) return `${statusHtml()}${top}<h1 class="n-title">${monthName(billMonth)}</h1>${billsSegment()}${noBills()}`;
+  if (!bills.length && !projected.length && !accruing.length) return `${statusHtml()}${top}<h1 class="n-title">${monthName(billMonth)}</h1>${billsSegment()}${noBills()}`;
   if (billMonth > current) {
     const planned = b => `<div class="n-row n-bill-row n-plain"><span class="n-text n-two"><span>${esc(b.text)}</span><span class="n-meta">${plannedMeta(b)}</span></span><span class="n-amount">${money(b.amount)}</span></div>`;
     return `${statusHtml()}${top}<h1 class="n-title">${monthName(billMonth)}</h1>${billsSegment()}
     <div class="n-total"><span>Previsto</span><strong>${money(left + projected.reduce((n, b) => n + b.amount, 0))}</strong></div>
     ${unpaid.length ? `<div class="n-group-h"><h2>A pagar</h2></div><div class="n-list">${unpaid.map(row).join('')}</div>` : ''}
     ${projected.length ? `<div class="n-group-h"><h2>Previstas</h2></div><div class="n-list">${projected.map(planned).join('')}</div><p class="n-note">Contas que se repetem entram aqui quando ${MONTHS[Number(billMonth.slice(5, 7)) - 1]} chegar.</p>` : ''}
+    ${accrual}
     ${paid.length ? `<div class="n-group-h"><h2>Pagas</h2></div><div class="n-list">${paid.map(row).join('')}</div>` : ''}`;
   }
   return `${statusHtml()}${top}<h1 class="n-title">${monthName(billMonth)}</h1>${billsSegment()}
-    <div class="n-total"><span>${left ? 'Falta pagar' : 'Tudo pago'}</span><strong>${money(left)}</strong></div>
+    ${bills.length ? `<div class="n-total"><span>${left ? 'Falta pagar' : 'Tudo pago'}</span><strong>${money(left)}</strong></div>
     <div class="n-bar" role="progressbar" aria-valuemin="0" aria-valuemax="${bills.length}" aria-valuenow="${paid.length}"><span style="width:${paid.length / bills.length * 100}%"></span></div>
-    <p class="n-bar-label">${paid.length} de ${bills.length} pagas</p>
+    <p class="n-bar-label">${paid.length} de ${bills.length} pagas</p>` : ''}
     ${unpaid.length ? `<div class="n-group-h"><h2>A pagar</h2></div><div class="n-list">${unpaid.map(row).join('')}</div>` : ''}
+    ${accrual}
     ${paid.length ? `<div class="n-group-h"><h2>Pagas</h2></div><div class="n-list">${paid.map(row).join('')}</div>` : ''}`;
 }
 
@@ -716,6 +730,7 @@ function billSheet(id, fromCatalog = false) {
     <div class="n-opts">
       <label class="n-opt">Cálculo<select name="calcMode" aria-label="Cálculo do valor"><option value="fixed" ${perOccurrence ? '' : 'selected'}>Fixo</option><option value="occurrence" ${perOccurrence ? 'selected' : ''}>Por ocorrência</option></select></label>
       <label class="n-opt"><span data-amount-label>${perOccurrence ? 'Por sessão' : 'Valor'}</span><input name="amount" inputmode="decimal" required placeholder="R$ 0,00" value="${bill ? esc(((perOccurrence ? bill.unitAmount : bill.amount) / 100).toFixed(2).replace('.', ',')) : ''}"></label>
+      <label class="n-opt" data-occurrence-lag>Cobrar<select name="lag" aria-label="Mês das sessões cobradas"><option value="0">Mês atual</option><option value="1" ${bill?.lag === 1 ? 'selected' : ''}>Mês anterior</option></select></label>
       <label class="n-opt" data-occurrence-start>Contar desde<input name="starts" type="date" aria-label="Contar desde" value="${esc(bill?.starts || `${month}-01`)}"></label>
       <label class="n-opt">Vence dia<select name="due"><option value="0">Sem dia</option>${Array.from({length: 31}, (_, i) => `<option value="${i + 1}" ${bill?.due === i + 1 ? 'selected' : ''}>${i + 1}</option>`).join('')}</select></label>
       <label class="n-opt">Repetir<select name="rule"><option value="none" ${rule === 'none' ? 'selected' : ''}>Não repete</option>${PRESETS.map(([n, l]) => `<option value="${n}" ${rule === String(n) ? 'selected' : ''}>${l}</option>`).join('')}<option value="custom" ${rule === 'custom' ? 'selected' : ''}>Outro…</option></select></label>
@@ -723,7 +738,7 @@ function billSheet(id, fromCatalog = false) {
     </div>
     <fieldset class="n-fieldset" data-occurrence-days><legend>Dias da semana</legend><div class="n-days">${[1, 2, 3, 4, 5, 6, 0].map(d => `<label><input type="checkbox" name="billWeekdays" value="${d}" aria-label="${WEEK[d]}" ${String(bill?.weekdays || '4').includes(String(d)) ? 'checked' : ''}><span>${['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'][d]}</span></label>`).join('')}</div></fieldset>
     <div class="n-bill-calculation" data-calculation hidden aria-live="polite"></div>
-    <fieldset class="n-fieldset" data-occurrence-dates hidden><legend>Incluir na cobrança deste mês</legend><div class="n-opts" data-date-list></div><p class="n-note">Desmarcar tira a sessão só desta cobrança. Feriados e faltas não são descontados automaticamente.</p></fieldset>
+    <fieldset class="n-fieldset" data-occurrence-dates hidden><legend data-dates-legend>Incluir na cobrança deste mês</legend><div class="n-opts" data-date-list></div><p class="n-note">Desmarcar tira a sessão só desta cobrança. Feriados e faltas não são descontados automaticamente.</p></fieldset>
     ${recurring ? `<fieldset class="n-bill-scope"><legend>Aplicar alterações a</legend><label><input type="radio" name="scope" value="one" ${fromCatalog ? '' : 'checked'}><span>Só este vencimento<small>Os próximos mantêm os dados atuais.</small></span></label><label><input type="radio" name="scope" value="future" ${fromCatalog ? 'checked' : ''}><span>Este e os próximos<small>Preserva os vencimentos anteriores e os outros já pagos.</small></span></label></fieldset>` : ''}
     <p class="n-note" data-repeat-note></p>
     <p class="n-error" data-error hidden>Informe o valor em reais, por exemplo 119,90.</p>
@@ -731,25 +746,32 @@ function billSheet(id, fromCatalog = false) {
   </form>`, () => {
     const form = $('#bill-form');
     const out = $('[data-n]', form);
-    const calculationFields = () => ({calcMode: form.elements.calcMode.value, unitAmount: parseMoney(form.elements.amount.value) ?? 0, weekdays: $$('[name="billWeekdays"]:checked', form).map(input => input.value).sort().join(''), starts: form.elements.starts.value, excluded: [...exclusions].filter(date => date.startsWith(`${month}-`)).sort().join(',')});
+    // A new bill that pays last month's sessions starts one month later.
+    const payMonth = () => bill ? month : addMonths(month, form.elements.calcMode.value === 'occurrence' ? Number(form.elements.lag.value) : 0);
+    const calculationFields = () => {
+      const lag = form.elements.calcMode.value === 'occurrence' ? Number(form.elements.lag.value) : 0, source = billSessionMonth({lag}, payMonth());
+      return {calcMode: form.elements.calcMode.value, unitAmount: parseMoney(form.elements.amount.value) ?? 0, weekdays: $$('[name="billWeekdays"]:checked', form).map(input => input.value).sort().join(''), starts: form.elements.starts.value, excluded: [...exclusions].filter(date => date.startsWith(`${source}-`)).sort().join(','), lag};
+    };
     const preview = () => {
       const calculation = calculationFields(), occurrence = calculation.calcMode === 'occurrence';
       $('[data-amount-label]', form).textContent = occurrence ? 'Por sessão' : 'Valor';
       $('[data-occurrence-start]', form).hidden = !occurrence;
+      $('[data-occurrence-lag]', form).hidden = !occurrence;
       form.elements.starts.required = occurrence;
       form.elements.starts.disabled = !occurrence;
       $('[data-occurrence-days]', form).hidden = !occurrence;
       $('[data-calculation]', form).hidden = !occurrence;
       $('[data-occurrence-dates]', form).hidden = !occurrence;
       if (!occurrence) return;
-      const draft = {...calculation, month}, snapshot = billSnapshot(draft);
-      $('[data-calculation]', form).innerHTML = `<span>${monthName(month)} · total previsto</span><strong>${money(snapshot.amount)}</strong><small>${billCalcLabel(draft)}</small>`;
-      $('[data-date-list]', form).innerHTML = billDates(draft).map(date => `<label class="n-bill-date"><input type="checkbox" data-bill-date="${date}" ${exclusions.has(date) ? '' : 'checked'}><span>${Number(date.slice(8))} de ${MONTHS[Number(month.slice(5, 7)) - 1]}<small>${WEEK[weekday(date)]}</small></span><span>${exclusions.has(date) ? 'Não cobrar' : money(calculation.unitAmount)}</span></label>`).join('') || '<p class="n-note">Nenhuma sessão neste mês.</p>';
+      const draft = {...calculation, month: payMonth()}, snapshot = billSnapshot(draft);
+      $('[data-dates-legend]', form).textContent = calculation.lag ? `Sessões de ${monthOf(billSessionMonth(draft))} · pagas em ${monthOf(draft.month)}` : 'Incluir na cobrança deste mês';
+      $('[data-calculation]', form).innerHTML = `<span>${monthName(draft.month)} · total previsto</span><strong>${money(snapshot.amount)}</strong><small>${billCalcLabel(draft)}</small>`;
+      $('[data-date-list]', form).innerHTML = billDates(draft).map(date => `<label class="n-bill-date"><input type="checkbox" data-bill-date="${date}" ${exclusions.has(date) ? '' : 'checked'}><span>${Number(date.slice(8))} de ${monthOf(date)}<small>${WEEK[weekday(date)]}</small></span><span>${exclusions.has(date) ? 'Não cobrar' : money(calculation.unitAmount)}</span></label>`).join('') || '<p class="n-note">Nenhuma sessão neste mês.</p>';
     };
     form.addEventListener('change', e => {
       if (e.target.dataset.billDate) e.target.checked ? exclusions.delete(e.target.dataset.billDate) : exclusions.add(e.target.dataset.billDate);
-      if (e.target.matches('[name="calcMode"], [name="starts"], [name="billWeekdays"], [data-bill-date]')) preview();
-      if (e.target.name === 'calcMode') note();
+      if (e.target.matches('[name="calcMode"], [name="lag"], [name="starts"], [name="billWeekdays"], [data-bill-date]')) preview();
+      if (['calcMode', 'lag'].includes(e.target.name)) note();
     });
     form.elements.amount.addEventListener('input', preview);
     const months = () => form.elements.rule.value === 'custom' ? Number(out.textContent) : Number(form.elements.rule.value);
@@ -761,10 +783,13 @@ function billSheet(id, fromCatalog = false) {
       $('[data-custom]', form).hidden = form.elements.rule.value !== 'custom';
       $('[data-repeat-note]', form).hidden = none && !one;
       if (one) { $('[data-repeat-note]', form).textContent = 'Para mudar a repetição, escolha “Este e os próximos”.'; return; }
-      if (!none && form.elements.calcMode.value === 'occurrence') { $('[data-repeat-note]', form).textContent = 'Cada cobrança será calculada pelas datas daquele mês e pelo preço por sessão. As exceções valem só para o mês ajustado.'; return; }
-      $('[data-repeat-note]', form).textContent = none ? '' : n === 1
-        ? `Em ${monthLabel(addMonths(month, 1))} ela volta como não paga, com o mesmo valor.`
-        : `Próximas: ${[1, 2, 3].map(j => monthLabel(addMonths(month, j * n))).join(', ')}.`;
+      const lag = form.elements.calcMode.value === 'occurrence' ? Number(form.elements.lag.value) : 0;
+      // Switching an existing bill to last month's sessions would count a month already charged.
+      const shifted = bill && lag !== (bill.lag === 1 ? 1 : 0) ? ` Esta cobrança passa a contar as sessões de ${monthOf(billSessionMonth({lag}, month))}; confira se elas já foram pagas.` : '';
+      if (!none && form.elements.calcMode.value === 'occurrence') { $('[data-repeat-note]', form).textContent = (lag ? 'Cada cobrança soma as sessões do mês anterior pelo preço por sessão.' : 'Cada cobrança será calculada pelas datas daquele mês e pelo preço por sessão.') + ' As exceções valem só para o mês ajustado.' + shifted; return; }
+      $('[data-repeat-note]', form).textContent = none ? shifted.trim() : n === 1
+        ? `Em ${monthLabel(addMonths(payMonth(), 1))} ela volta como não paga, com o mesmo valor.`
+        : `Próximas: ${[1, 2, 3].map(j => monthLabel(addMonths(payMonth(), j * n))).join(', ')}.`;
     };
     form.elements.rule.addEventListener('change', note);
     $$('[name="scope"]', form).forEach(input => input.addEventListener('change', note));
@@ -783,7 +808,7 @@ function billSheet(id, fromCatalog = false) {
       const calculation = calculationFields();
       if (calculation.calcMode === 'occurrence' && !calculation.weekdays) { toast('Escolha ao menos um dia da semana.'); return; }
       if (calculation.unitAmount > 100000000) { toast('O valor máximo por sessão é R$ 1.000.000,00.'); return; }
-      const patch = {text, ...billSnapshot({...calculation, amount, month}), due: Number(form.elements.due.value), repeat: form.elements.rule.value !== 'none', every: form.elements.rule.value === 'none' ? 1 : months(), month};
+      const patch = {text, ...billSnapshot({...calculation, amount, month: payMonth()}), due: Number(form.elements.due.value), repeat: form.elements.rule.value !== 'none', every: form.elements.rule.value === 'none' ? 1 : months(), month: payMonth()};
       const scope = recurring ? form.elements.scope.value : 'one';
       $('.n-ok', form).disabled = true;
       let changed = false;
@@ -1355,8 +1380,8 @@ function deskContas() {
 
 function billTable() {
   const current = today().slice(0, 7), day = Number(today().slice(8, 10));
-  const {real: bills, projected} = monthBills(billMonth);
-  if (!bills.length && !projected.length) return noBills();
+  const {real: bills, projected} = monthBills(billMonth), accruing = accrualRows(billMonth);
+  if (!bills.length && !projected.length && !accruing.length) return noBills();
   const sortDue = list => [...list].sort((a, b) => (a.due || 99) - (b.due || 99) || a.text.localeCompare(b.text));
   const unpaid = sortDue(bills.filter(b => !b.done)), paid = sortDue(bills.filter(b => b.done));
   const sum = list => list.reduce((n, b) => n + (b.amount || 0), 0), left = sum(unpaid), total = sum(bills);
@@ -1366,9 +1391,9 @@ function billTable() {
   const nextDay = next && `${billMonth}-${String(Math.min(next.due, lastDay)).padStart(2, '0')}`;
   const planned = sum(projected), future = billMonth > current;
   const stats = future ? `<div class="d-stats"><div class="d-stat is-big"><span>Previsto no mês</span><strong>${money(left + planned)}</strong><small>${plural(unpaid.length + projected.length, 'conta', 'contas')} a pagar</small></div></div>` : `<div class="d-stats">
-    <div class="d-stat is-big"><span>${left ? 'Falta pagar' : 'Tudo pago'}</span><strong>${money(left)}</strong><div class="n-bar" role="progressbar" aria-valuemin="0" aria-valuemax="${bills.length}" aria-valuenow="${paid.length}" aria-label="Contas pagas"><span style="width:${paid.length / bills.length * 100}%"></span></div><small>${paid.length} de ${bills.length} pagas · ${money(total)} no mês</small></div>
+    <div class="d-stat is-big"><span>${left ? 'Falta pagar' : bills.length ? 'Tudo pago' : 'Nada a pagar'}</span><strong>${money(left)}</strong><div class="n-bar" role="progressbar" aria-valuemin="0" aria-valuemax="${bills.length}" aria-valuenow="${paid.length}" aria-label="Contas pagas"><span style="width:${bills.length ? paid.length / bills.length * 100 : 0}%"></span></div><small>${paid.length} de ${bills.length} pagas · ${money(total)} no mês</small></div>
     <div class="d-stat ${overdue.length ? 'is-late' : ''}"><span>Atrasadas</span><strong>${overdue.length ? esc(overdue.map(b => b.text).join(', ')) : 'Nenhuma'}</strong><small>${overdue.length ? money(sum(overdue)) : 'Tudo em dia'}</small></div>
-    ${billMonth === current ? `<div class="d-stat"><span>Próximo vencimento</span><strong>${next ? esc(next.text) : 'Nenhum'}</strong><small>${next ? `${WEEK[weekday(nextDay)].toLowerCase()}, dia ${next.due} · ${money(next.amount)}` : 'Nada mais a vencer neste mês'}</small></div>` : ''}
+    ${billMonth === current && accruing.length ? `<div class="d-stat"><span>Acumulando para ${monthOf(addMonths(billMonth, 1))}</span><strong class="n-accent">${money(accruing.reduce((n, b) => n + b.held * b.unitAmount, 0))}</strong><small>${accruing.length === 1 ? `${esc(accruing[0].text)} · ${accruing[0].held} de ${plural(billIncludedDates(accruing[0]).length, 'sessão', 'sessões')}` : plural(accruing.length, 'conta', 'contas')}</small></div>` : billMonth === current ? `<div class="d-stat"><span>Próximo vencimento</span><strong>${next ? esc(next.text) : 'Nenhum'}</strong><small>${next ? `${WEEK[weekday(nextDay)].toLowerCase()}, dia ${next.due} · ${money(next.amount)}` : 'Nada mais a vencer neste mês'}</small></div>` : ''}
   </div>`;
   const row = b => `<tr class="${b.done ? 'is-done' : ''}" data-bill-row="${esc(b.id)}">
     <td class="d-c-check"><button class="n-check" data-toggle="${esc(b.id)}" data-collection="bills" aria-pressed="${!!b.done}" aria-label="${b.done ? 'Desmarcar' : 'Marcar como paga'} ${esc(b.text)}">${ICONS.check}</button></td>
@@ -1378,8 +1403,9 @@ function billTable() {
     <td class="d-num">${money(b.amount)}</td>
     <td class="d-c-more">${billActions(b)}</td></tr>`;
   const plannedRow = b => `<tr class="is-planned"><td class="d-c-check"></td><td><span class="d-c-name">${esc(b.text)}${b.calcMode === 'occurrence' ? `<small>${billCalcLabel(b)}</small>` : ''}</span></td><td>${b.due ? `Dia ${b.due}` : 'Sem dia'}</td><td>${cap(everyLabel(b.every))}</td><td class="d-num">${money(b.amount)}</td><td></td></tr>`;
+  const accrualRow = b => `<tr class="is-planned"><td class="d-c-check"></td><td><span class="d-c-name">${esc(b.text)}<small>${b.progress}</small></span></td><td>${payWhen(b)}</td><td>${cap(everyLabel(billEvery(b)))}</td><td class="d-num">${money(b.amount)}</td><td></td></tr>`;
   return `${stats}<table class="d-table"><thead><tr><th><span class="n-sr">Paga</span></th><th>Conta</th><th>Vencimento</th><th>Repetição</th><th class="d-num">Valor</th><th><span class="n-sr">Ações</span></th></tr></thead>
-    <tbody>${unpaid.map(row).join('')}${projected.length ? `<tr class="d-t-group"><td colspan="6">Previstas · entram quando o mês chegar</td></tr>${projected.map(plannedRow).join('')}` : ''}${paid.length ? `<tr class="d-t-group"><td colspan="6">Pagas</td></tr>${paid.map(row).join('')}` : ''}</tbody></table>`;
+    <tbody>${unpaid.map(row).join('')}${projected.length ? `<tr class="d-t-group"><td colspan="6">Previstas · entram quando o mês chegar</td></tr>${projected.map(plannedRow).join('')}` : ''}${accruing.length ? `<tr class="d-t-group"><td colspan="6">Acumulando · paga em ${monthOf(addMonths(billMonth, 1))}</td></tr>${accruing.map(accrualRow).join('')}` : ''}${paid.length ? `<tr class="d-t-group"><td colspan="6">Pagas</td></tr>${paid.map(row).join('')}` : ''}</tbody></table>`;
 }
 
 function deskCompras() {

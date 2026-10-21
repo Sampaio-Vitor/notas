@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {initialState, apply, rollover, live, repeatingBills, scheduledBills, billCatalog, editBillOps, deleteBillOps, undoBillOps, billRule, billDates, billIncludedDates, billSnapshot} from '../public/model.js';
+import {initialState, apply, rollover, live, repeatingBills, scheduledBills, billCatalog, editBillOps, deleteBillOps, undoBillOps, billRule, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills} from '../public/model.js';
 
 const run = (state, ops) => ops.forEach(op => apply(state, op));
 function fixture() {
@@ -290,4 +290,47 @@ test('desfazer exclusão futura de conta legada restaura defaults e a recorrênc
   assert.equal(s.bills[selected.id].skipped, false);
   run(s, rollover(s, '2026-11-01'));
   assert.equal(s.bills['internet-2026-11'].amount, 11990);
+});
+
+// Personal às terças e quintas desde 1º/10, pago no mês seguinte: a primeira cobrança é novembro.
+const trainer = {id: 'trainer', text: 'Personal', calcMode: 'occurrence', unitAmount: 8000, weekdays: '24', starts: '2026-10-01', excluded: '', lag: 1, repeat: true, every: 1, due: 10, month: '2026-11'};
+function trainerState() {
+  const s = initialState();
+  s.months['2026-10'] = {month: '2026-10'};
+  s.bills.trainer = {...trainer, ...billSnapshot(trainer), done: false};
+  return s;
+}
+
+test('cobrança do mês anterior soma as sessões do mês de origem', () => {
+  assert.equal(billSessionMonth(trainer), '2026-10');
+  assert.equal(billDates(trainer).length, 9);
+  assert.equal(billSnapshot(trainer).amount, 72000);
+  assert.equal(billSnapshot(trainer, '2026-12').amount, 64000);
+  assert.equal(billSnapshot({...trainer, month: '2026-10'}).amount, 0);
+  assert.equal(billSnapshot({...trainer, lag: 0}).amount, 64000);
+  assert.equal(billSnapshot({...trainer, excluded: '2026-10-13'}).amount, 64000);
+});
+
+test('virada, projeção e acumulado usam o mês anterior sem duplicar', () => {
+  const s = trainerState();
+  assert.deepEqual(accruingBills(s, '2026-10').map(b => [b.id, b.amount]), [['trainer', 72000]]);
+  assert.deepEqual(accruingBills(s, '2026-11').map(b => [b.id, b.amount, b.virtual]), [['trainer-2026-12', 64000, true]]);
+  assert.deepEqual(accruingBills(s, '2026-09'), []);
+  assert.deepEqual(scheduledBills(s, '2026-12', 1)[0].items.map(i => i.amount), [64000]);
+  run(s, rollover(s, '2026-11-01'));
+  assert.equal(s.bills['trainer-2026-11'], undefined);
+  run(s, rollover(s, '2026-12-01'));
+  assert.equal(s.bills['trainer-2026-12'].amount, 64000);
+  assert.equal(s.bills['trainer-2026-12'].lag, 1);
+});
+
+test('voltar para o mês atual vale para os próximos e preserva o pago', () => {
+  const s = trainerState();
+  s.bills.trainer.done = true;
+  run(s, rollover(s, '2026-12-01'));
+  run(s, editBillOps(s, s.bills['trainer-2026-12'], {...trainer, lag: 0, month: '2026-12'}, 'future'));
+  assert.equal(s.bills.trainer.amount, 72000);
+  assert.equal(s.bills['trainer-2026-12'].amount, 80000);
+  assert.equal(s.billRules.trainer.lag, 0);
+  assert.equal(s.bills['trainer-2026-12'].lag, 0);
 });

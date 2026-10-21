@@ -244,7 +244,7 @@ function mcpResponse(agent, message) {
 }
 
 // ---------- Validation ----------
-const billCalculation = {calcMode: 'string', unitAmount: 'number', weekdays: 'string', starts: 'string', excluded: 'string'};
+const billCalculation = {calcMode: 'string', unitAmount: 'number', weekdays: 'string', starts: 'string', excluded: 'string', lag: 'number'};
 const schema = {
   sections: {name: 'string', order: 'number', deleted: 'boolean'},
   tasks: {text: 'string', section: 'string', date: 'string', time: 'string', done: 'boolean', repeat: 'string', from: 'string', meeting: 'boolean', deleted: 'boolean'},
@@ -263,6 +263,7 @@ const formats = {
   every: v => Number.isInteger(v) && v >= 1 && v <= 24, monthDay: v => Number.isInteger(v) && v <= 31, due: v => Number.isInteger(v) && v <= 31,
   month: v => /^\d{4}-(0[1-9]|1[0-2])$/.test(v),
   calcMode: v => ['fixed', 'occurrence'].includes(v),
+  lag: v => v === 0 || v === 1,
   skipReason: v => ['', 'frequency', 'removed'].includes(v),
   unitAmount: v => Number.isSafeInteger(v) && v <= 100000000,
   weekdays: v => /^[0-6]{0,7}$/.test(v) && new Set(v).size === v.length,

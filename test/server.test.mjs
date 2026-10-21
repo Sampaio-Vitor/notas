@@ -41,7 +41,7 @@ test('API: autenticação, sessão, persistência, SSE, idempotência e validaç
  assert.equal((await post({opId:'bill-skip',collection:'bills',id:'b2',patch:{skipped:true}})).status,200);
  assert.equal((await post({opId:'bill-unskip',collection:'bills',id:'b2',patch:{skipped:false}})).status,200);
  assert.equal((await post({opId:'bill-occurrence',collection:'bills',id:'therapy',patch:{text:'Terapia',amount:80000,month:'2026-10',repeat:true,calcMode:'occurrence',unitAmount:20000,weekdays:'4',starts:'2026-10-01',excluded:'2026-10-29'}})).status,200);
- for(const [field,value] of [['calcMode','other'],['unitAmount',1.5],['unitAmount',100000001],['weekdays','44'],['weekdays','7'],['starts','2026-02-30'],['excluded','ontem']])assert.equal((await post({opId:'bad-calc-'+field+'-'+value,collection:'bills',id:'therapy',patch:{[field]:value}})).status,400);
+ for(const [field,value] of [['calcMode','other'],['unitAmount',1.5],['unitAmount',100000001],['weekdays','44'],['weekdays','7'],['starts','2026-02-30'],['excluded','ontem'],['lag',2],['lag','1']])assert.equal((await post({opId:'bad-calc-'+field+'-'+value,collection:'bills',id:'therapy',patch:{[field]:value}})).status,400);
  assert.equal((await post({opId:'bad-due',collection:'bills',id:'b1',patch:{due:32}})).status,400);
  assert.equal((await(await fetch(url+'/api/session',{headers:headers()})).json()).protected,true);
  assert.equal((await fetch(url+'/api/operations',{method:'POST',headers:{...headers(),origin:'https://evil.example'},body:JSON.stringify(op)})).status,403);

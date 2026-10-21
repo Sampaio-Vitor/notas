@@ -79,18 +79,20 @@ export function repeatingBills(state) {
   return [...rules.values()].filter(b => !b.deleted && b.repeat !== false && /^\d{4}-(0[1-9]|1[0-2])$/.test(b.month));
 }
 const monthGap = (a, b) => (Number(a.slice(0, 4)) - Number(b.slice(0, 4))) * 12 + Number(a.slice(5, 7)) - Number(b.slice(5, 7));
+// With lag 1 a bill pays the sessions of the month before its own (October's, paid in November).
+export const billSessionMonth = (b, month = b.month) => shiftMonth(month, -(b.lag === 1 ? 1 : 0));
 export function billDates(b, month = b.month) {
   if (b.calcMode !== 'occurrence') return [];
-  const dates = [];
-  for (let day = 1; day <= lastDayOfMonth(`${month}-01`); day++) {
-    const date = `${month}-${String(day).padStart(2, '0')}`;
+  const dates = [], source = billSessionMonth(b, month);
+  for (let day = 1; day <= lastDayOfMonth(`${source}-01`); day++) {
+    const date = `${source}-${String(day).padStart(2, '0')}`;
     if (date >= (b.starts || '') && String(b.weekdays || '').includes(String(weekday(date)))) dates.push(date);
   }
   return dates;
 }
 export const billIncludedDates = b => billDates(b).filter(date => !String(b.excluded || '').split(',').includes(date));
 // Each occurrence stores its own pricing inputs and total. Rules never carry exclusions.
-const calcFields = b => b.calcMode ? {calcMode: b.calcMode, unitAmount: b.unitAmount || 0, weekdays: b.weekdays || '', starts: b.starts || '', excluded: b.excluded || ''} : {};
+const calcFields = b => b.calcMode ? {calcMode: b.calcMode, unitAmount: b.unitAmount || 0, weekdays: b.weekdays || '', starts: b.starts || '', excluded: b.excluded || '', lag: b.lag === 1 ? 1 : 0} : {};
 export function billSnapshot(b, month = b.month) {
   const value = {...b, month};
   return {...calcFields(value), amount: value.calcMode === 'occurrence' ? billIncludedDates(value).length * (value.unitAmount || 0) : value.amount || 0};
@@ -197,6 +199,18 @@ export function scheduledBills(state, from, count = 12) {
   }
   for (const m of months) m.items.sort((x, y) => (x.due || 99) - (y.due || 99) || x.text.localeCompare(y.text, 'pt-BR'));
   return months;
+}
+
+// Bills paid next month whose sessions happen in `month`: the next record of the chain
+// when it already exists, otherwise what the rule will create there.
+export function accruingBills(state, month) {
+  const pay = shiftMonth(month, 1), rows = [];
+  for (const rule of repeatingBills(state).filter(r => r.calcMode === 'occurrence' && r.lag === 1)) {
+    const existing = occurrence(state, rule, pay), gap = monthGap(pay, rule.month);
+    if (existing) { if (!existing.deleted && !existing.skipped) rows.push({...existing, every: billEvery(rule)}); }
+    else if (gap > 0 && gap % billEvery(rule) === 0) rows.push({...billFields(rule), ...billSnapshot({...rule, excluded: ''}, pay), id: `${billChain(rule.id)}-${pay}`, month: pay, done: false, virtual: true});
+  }
+  return rows.filter(b => billDates(b).length).sort((a, b) => (a.due || 99) - (b.due || 99) || a.text.localeCompare(b.text, 'pt-BR'));
 }
 
 export const occurrenceId = (repeatId, date) => `r-${repeatId}-${date}`;
