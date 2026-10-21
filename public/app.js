@@ -3,7 +3,7 @@ import {createNavigation} from './navigation.js';
 const report = message => { try { navigator.sendBeacon?.('/api/client-log', new Blob([JSON.stringify({message})], {type: 'application/json'})); } catch {} };
 addEventListener('error', e => report(`${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`));
 addEventListener('unhandledrejection', e => report(`promise: ${e.reason?.stack || e.reason}`));
-import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, parseQuickTask, meetingLanes, meetingEnd, toMinutes, fromMinutes} from './model.js';
+import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, parseQuickTask, meetingLanes, meetingEnd, onAgenda, toMinutes, fromMinutes} from './model.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -22,8 +22,9 @@ const addMonths = (month, n) => { const d = new Date(`${month}-01T12:00:00`); d.
 const monthName = month => { const name = cap(MONTHS[Number(month.slice(5, 7)) - 1]); return month.slice(0, 4) === today().slice(0, 4) ? name : `${name} de ${month.slice(0, 4)}`; };
 const longDate = date => `${WEEK[weekday(date)]}, ${Number(date.slice(8, 10))} de ${MONTHS[Number(date.slice(5, 7)) - 1]}`;
 const shortTime = t => t ? t.replace(/^0/, '') : '';
-// "14:00–15:30" for a meeting with a time; just the time for anything else.
-const timeLabel = t => t.meeting && t.time ? `${shortTime(t.time)}–${shortTime(meetingEnd(t))}` : shortTime(t.time);
+// "14:00–15:30" for anything with a time; tasks saved before they had an end show
+// just the start, meetings their old 30 minutes.
+const timeLabel = t => t.time && (t.meeting || t.end) ? `${shortTime(t.time)}–${shortTime(meetingEnd(t))}` : shortTime(t.time);
 
 // "de ontem", "de sexta", "de 3 de outubro"
 function fromDay(date) {
@@ -52,7 +53,7 @@ const ICONS = {
   compras: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 8.5h13l-1 11a1.5 1.5 0 0 1-1.5 1.4H8a1.5 1.5 0 0 1-1.5-1.4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9 8.5V7a3 3 0 0 1 6 0v1.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
   ajustes: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h9M18 7h1M5 17h1M10 17h9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="16" cy="7" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="8" cy="17" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
 };
-const TABS = [['hoje', 'Hoje'], ['reunioes', 'Reuniões'], ['backlog', 'Backlog'], ['compras', 'Compras'], ['contas', 'Contas'], ['ajustes', 'Ajustes']];
+const TABS = [['hoje', 'Hoje'], ['reunioes', 'Agenda'], ['backlog', 'Backlog'], ['compras', 'Compras'], ['contas', 'Contas'], ['ajustes', 'Ajustes']];
 // Hoje and Ajustes always show; the others follow this person's choices in Ajustes.
 const visibleTabs = () => { const prefs = tabPrefs(state); return TABS.filter(([id]) => !(id in prefs) || prefs[id]); };
 
@@ -170,12 +171,13 @@ const tasksOn = date => live(state, 'tasks').filter(t => t.date === date);
 const dayTasks = date => {
   const stored = tasksOn(date);
   if (state.days[date]) return stored;
-  return [...stored, ...live(state, 'repeats').filter(r => repeatsOn(r, date) && !state.tasks[occurrenceId(r.id, date)]).map(r => ({id: occurrenceId(r.id, date), text: r.text, section: r.section, time: r.time || '', date, done: false, repeat: r.id, ...(r.meeting ? {meeting: true, end: r.end || ''} : {})}))];
+  return [...stored, ...live(state, 'repeats').filter(r => repeatsOn(r, date) && !state.tasks[occurrenceId(r.id, date)]).map(r => ({id: occurrenceId(r.id, date), text: r.text, section: r.section, time: r.time || '', date, done: false, repeat: r.id, ...(r.time ? {end: r.end || ''} : {}), ...(r.meeting ? {meeting: true} : {})}))];
 };
-// With the Reuniões tab on, meetings live there and leave Hoje.
+// With the Agenda tab on, meetings live there and leave Hoje. Other tasks with a
+// time show in both.
 const meetingsApart = () => tabPrefs(state).reunioes;
 const todayTasks = () => tasksOn(today()).filter(t => !(meetingsApart() && t.meeting));
-const todayMeetings = () => tasksOn(today()).filter(t => t.meeting);
+const todayMeetings = () => tasksOn(today()).filter(onAgenda);
 const backlog = () => live(state, 'tasks').filter(t => t.date === '');
 const scheduled = () => scheduledTasks(state, today());
 // "qui, 5 de nov"
@@ -291,19 +293,19 @@ function viewHoje() {
 
 function viewReunioes() {
   const now = todayMeetings(), days = Array.from({length: 6}, (_, i) => addDays(today(), i + 1));
-  const once = scheduled().filter(t => t.meeting), horizon = days.at(-1);
+  const once = scheduled().filter(onAgenda), horizon = days.at(-1);
   const row = (item, date) => `<div class="n-row n-plain"><button class="n-text n-two" ${item.repeats ? `data-edit-repeat="${item.id}"` : `data-edit-task="${item.id}"`}><span>${esc(item.text)}</span><span class="n-meta">${date ? `<span class="n-accent">${dayShort(date)}</span> · ` : ''}${esc(sectionName(item.section))}</span></button>${item.time || item.repeats ? `<span class="n-meta">${item.repeats ? ICONS.rep : ''}${esc(timeLabel(item))}</span>` : ''}</div>`;
   const group = (title, rows, count) => `<section><div class="n-group-h"><h2>${title}</h2><span>${count}</span></div><div class="n-list">${rows}</div></section>`;
   const upcoming = days.map(date => {
-    const list = [...live(state, 'repeats').filter(r => r.meeting && repeatsOn(r, date)).map(r => ({...r, repeats: true})), ...once.filter(t => t.date === date)].sort((a, b) => (a.time || '99').localeCompare(b.time || '99'));
+    const list = [...live(state, 'repeats').filter(r => onAgenda(r) && repeatsOn(r, date)).map(r => ({...r, repeats: true})), ...once.filter(t => t.date === date)].sort((a, b) => (a.time || '99').localeCompare(b.time || '99'));
     return list.length ? group(cap(nextDayLabel(date)), list.map(item => row(item)).join(''), list.length) : '';
   }).join('');
   const later = once.filter(t => t.date > horizon);
   const laterGroup = later.length ? group('Mais adiante', later.map(t => row(t, t.date)).join(''), later.length) : '';
   const today_ = now.length
     ? `<section><div class="n-group-h"><h2>Hoje</h2><span>${doneCount(now)} de ${now.length}</span></div><div class="n-list">${byDone(now).map(t => taskRow(t)).join('')}</div></section>`
-    : '<div class="n-empty"><p>Nenhuma reunião hoje.</p></div>';
-  return `${statusHtml()}<div class="n-top"><span></span></div><h1 class="n-title">Reuniões</h1><p class="n-sub">${longDate(today())}</p>${today_}${upcoming}${laterGroup}`;
+    : '<div class="n-empty"><p>Nada na agenda hoje.</p></div>';
+  return `${statusHtml()}<div class="n-top"><span></span></div><h1 class="n-title">Agenda</h1><p class="n-sub">${longDate(today())}</p>${today_}${upcoming}${laterGroup}`;
 }
 
 const agendadasGroup = waiting => waiting.length ? `<section><div class="n-group-h"><h2>Agendadas</h2><span>${waiting.length}</span></div><div class="n-list">${waiting.map(t => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-task="${t.id}"><span>${esc(t.text)}</span><span class="n-meta"><span class="n-accent">${dayShort(t.date)}</span> · ${esc(sectionName(t.section))}</span></button>${t.time ? `<span class="n-meta">${esc(timeLabel(t))}</span>` : ''}</div>`).join('')}</div></section>` : '';
@@ -475,8 +477,8 @@ function viewAjustes() {
       <div class="n-row n-plain"><button class="n-text n-accent" data-new-section>Nova seção</button></div></div>
     <p class="n-note">A ordem aqui é a ordem em Hoje e no Backlog${desktop() ? ' e define a cor de cada seção' : ''}.</p>
     <div class="n-group-h"><h2>Abas</h2></div>
-    <div class="n-list">${[['reunioes', 'Reuniões'], ['backlog', 'Backlog'], ['compras', 'Compras'], ['contas', 'Contas']].map(([id, label]) => `<label class="n-row n-plain"><span class="n-text">${label}</span><input type="checkbox" class="n-switch" data-tab-pref="${id}" ${tabPrefs(state)[id] ? 'checked' : ''}></label>`).join('')}</div>
-    <p class="n-note">Hoje e Ajustes sempre aparecem. Com Reuniões ligada, as tarefas marcadas como reunião saem do Hoje e ficam nessa aba.</p>
+    <div class="n-list">${[['reunioes', 'Agenda'], ['backlog', 'Backlog'], ['compras', 'Compras'], ['contas', 'Contas']].map(([id, label]) => `<label class="n-row n-plain"><span class="n-text">${label}</span><input type="checkbox" class="n-switch" data-tab-pref="${id}" ${tabPrefs(state)[id] ? 'checked' : ''}></label>`).join('')}</div>
+    <p class="n-note">Hoje e Ajustes sempre aparecem. A Agenda mostra tudo que tem horário; com ela ligada, as reuniões saem do Hoje e ficam só lá.</p>
     <div class="n-group-h"><h2>Repetições</h2></div>
     <div class="n-list">
       <div class="n-row n-plain"><button class="n-text" data-push="repeats">Tarefas que se repetem</button><span class="n-meta">${repeats}</span><span class="n-chev" aria-hidden="true">›</span></div>
@@ -624,7 +626,7 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       <label class="n-opt" data-later-only>Data<input type="date" name="date" min="${addDays(today(), 1)}" value="${initialWhen === 'later' ? task?.date || presetDate : addDays(today(), 1)}"></label>
       <label class="n-opt">Reunião<input type="checkbox" class="n-switch" name="meeting" ${isMeeting ? 'checked' : ''}></label>
       <label class="n-opt"><span data-time-label>Horário</span><input type="time" name="time" value="${esc(source?.time || presetTime || '')}"></label>
-      <label class="n-opt" data-meeting-only>Fim<input type="time" name="end" value="${esc(source?.time || presetTime ? meetingEnd({time: source?.time || presetTime, end: source?.end}) : '')}"></label>
+      <label class="n-opt" data-end-only>Fim<input type="time" name="end" value="${esc(source?.time || presetTime ? meetingEnd({time: source?.time || presetTime, end: source?.end}) : '')}"></label>
       <label class="n-opt" data-repeat-only>Repetir<select name="rule">
         ${[['none', 'Não repete'], ['daily', 'Todo dia'], ['weekdays', 'Dias úteis'], ['custom', 'Dias escolhidos'], ['monthly', 'Todo mês']].filter(([v]) => !editingRepeat || v !== 'none').map(([v, l]) => `<option value="${v}" ${v === kind ? 'selected' : ''}>${l}</option>`).join('')}
       </select></label>
@@ -644,11 +646,11 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       $('[data-repeat-only]', form).hidden = !repeats;
       $('[data-days]', form).hidden = !repeats || !['daily', 'weekdays', 'custom'].includes(rule);
       $('[data-month-day]', form).hidden = !repeats || rule !== 'monthly';
-      const meets = form.elements.meeting.checked;
-      $('[data-meeting-only]', form).hidden = !meets;
-      $('[data-time-label]', form).textContent = meets ? 'Início' : 'Horário';
+      const timed = !!form.elements.time.value;
+      $('[data-end-only]', form).hidden = !timed;
+      $('[data-time-label]', form).textContent = timed ? 'Início' : 'Horário';
     };
-    // Moving the start keeps the meeting's length; a first start gets 30 minutes.
+    // Moving the start keeps the length; a first start gets 30 minutes.
     let lastStart = form.elements.time.value;
     form.elements.time.addEventListener('change', () => {
       const start = form.elements.time.value, end = form.elements.end.value;
@@ -657,8 +659,8 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
         form.elements.end.value = fromMinutes(Math.min(toMinutes(start) + length, 23 * 60 + 59));
       }
       lastStart = start;
+      update();
     });
-    form.elements.meeting.addEventListener('change', update);
     form.elements.rule.addEventListener('change', () => {
       const preset = {daily: '0123456', weekdays: '12345'}[form.elements.rule.value];
       if (preset) for (const box of form.elements.day) box.checked = preset.includes(box.value);
@@ -681,8 +683,8 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       if (chosenWhen === 'later' && !(later > today())) { toast('Escolha uma data a partir de amanhã.'); return form.elements.date.focus(); }
       const time = dated ? form.elements.time.value : '';
       const meeting = dated && form.elements.meeting.checked;
-      const end = meeting && time ? form.elements.end.value || meetingEnd({time}) : '';
-      if (end && end <= time) { toast('O fim da reunião precisa ser depois do início.'); return form.elements.end.focus(); }
+      const end = time ? form.elements.end.value || meetingEnd({time}) : '';
+      if (end && end <= time) { toast('O fim precisa ser depois do início.'); return form.elements.end.focus(); }
       const rule = form.elements.rule.value;
       const chosen = [...form.elements.day].filter(b => b.checked).map(b => b.value).join('');
       const wantsRepeat = onToday && (rule === 'monthly' || (rule !== 'none' && chosen));
@@ -1259,14 +1261,14 @@ document.addEventListener('pointerdown', e => { if (e.target.closest('[data-keep
 
 // ---------- Desktop ----------
 // From 960px wide (the app installed on a computer) the same data gets a sidebar,
-// a toolbar and layouts that use the width: Hoje with a side column, Reuniões as a
+// a toolbar and layouts that use the width: Hoje with a side column, Agenda as a
 // week, Contas as a table. Mouse and keyboard replace swipes and long presses.
 
 const wideQuery = matchMedia('(min-width: 960px)');
 const desktop = () => wideQuery.matches;
 wideQuery.addEventListener('change', () => { selecting = false; selected.clear(); cursor = null; closeFinder(); closeMenu(); render(); });
 const KEY = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? '⌘' : 'Ctrl+';
-// Week shown in Reuniões (its Monday; null follows today), keyboard cursor, range anchor.
+// Week shown in Agenda (its Monday; null follows today), keyboard cursor, range anchor.
 // The private week paints every meeting as the same dark block, with no text and no
 // current-time line, so a screenshot shows only when you are busy.
 let weekStart = null, privateWeek = false, cursor = null, anchor = null, finder = null, dragIds = null;
@@ -1329,7 +1331,7 @@ function hojeRail() {
       const line = !marked && start !== null && start > now ? (marked = true, `<div class="d-now"><b>${clock(now)}</b><hr></div>`) : '';
       return `${line}<button class="d-ev ${t.done || (start !== null && minutes(meetingEnd(t)) <= now) ? 'is-past' : ''}" data-edit-task="${t.id}"><b>${t.time ? esc(timeLabel(t)) : '·'}</b><span style="--c:${sectionColor(t.section)}">${esc(t.text)}<small class="${soon ? 'n-accent' : ''}">${soon ? `em ${start - now} min` : esc(sectionName(t.section))}</small></span></button>`;
     }).join('');
-    cards.push(`<section class="d-card"><div class="d-card-h"><h2>Reuniões de hoje</h2>${prefs.reunioes ? '<button class="n-link" data-tab="reunioes">Semana</button>' : ''}</div>${rows || '<p class="d-card-empty">Nenhuma reunião hoje.</p>'}</section>`);
+    cards.push(`<section class="d-card"><div class="d-card-h"><h2>Agenda de hoje</h2>${prefs.reunioes ? '<button class="n-link" data-tab="reunioes">Semana</button>' : ''}</div>${rows || '<p class="d-card-empty">Nada na agenda hoje.</p>'}</section>`);
   }
   if (prefs.contas) {
     const day = Number(today().slice(8, 10));
@@ -1345,12 +1347,12 @@ function hojeRail() {
   return `<aside class="d-rail" aria-label="Resumo do dia">${cards.join('')}</aside>`;
 }
 
-// Meetings of one day: the ones already on that date (one-off, or a repeat's
+// Agenda of one day (meetings and anything with a time): the ones already on that date (one-off, or a repeat's
 // occurrence) plus the repeats whose occurrence was not created for it, such as
 // future days or days the app was not opened.
 function weekMeetings(date) {
-  const projected = live(state, 'repeats').filter(r => r.meeting && repeatsOn(r, date) && !state.tasks[occurrenceId(r.id, date)]).map(r => ({...r, repeats: true}));
-  return [...tasksOn(date).filter(t => t.meeting), ...projected];
+  const projected = live(state, 'repeats').filter(r => onAgenda(r) && repeatsOn(r, date) && !state.tasks[occurrenceId(r.id, date)]).map(r => ({...r, repeats: true}));
+  return [...tasksOn(date).filter(onAgenda), ...projected];
 }
 function weekLabel(first, last) {
   const day = d => Number(d.slice(8, 10)), month = d => MONTHS[Number(d.slice(5, 7)) - 1];
@@ -1379,8 +1381,8 @@ function deskReunioes() {
   const nowLine = !privateWeek && days.some(d => d.date === today()) && now >= first && now <= last;
   const grid = `<div class="d-wk-b" style="${cols};height:${y(last)}px"><div class="d-wk-gut">${hours.join('')}${nowLine ? `<span class="is-now" style="top:${y(now)}px">${clock(now)}</span>` : ''}</div>
     ${days.map(d => `<div class="d-wk-col ${d.date === today() ? 'is-today' : ''}" data-slot-day="${d.date}" data-first="${first}" data-hour="${HOUR}" style="--hour:${HOUR}px">${meetingLanes(d.list.filter(m => m.time).map(m => ({...m, start: minutes(m.time), stop: minutes(meetingEnd(m))}))).map(m => block(m, d.date)).join('')}${d.date === today() && nowLine ? `<div class="d-wk-now" style="top:${y(now)}px"></div>` : ''}</div>`).join('')}${nowLine ? `<div class="d-wk-now-all" style="top:${y(now)}px"></div>` : ''}</div>`;
-  const end = `<div class="d-pager"><button class="d-tool" data-week="-1" aria-label="Semana anterior">‹</button><button class="d-tool" data-week="0" ${weekStart ? '' : 'disabled'}>Esta semana</button><button class="d-tool" data-week="1" aria-label="Próxima semana">›</button></div><button class="d-tool ${privateWeek ? 'is-on' : ''}" data-private-week aria-pressed="${privateWeek}" title="${privateWeek ? 'Mostrar reuniões' : 'Só mostrar horários ocupados'}">${ICONS.eye}</button>${deskAdd('Nova reunião', 'data-new-meeting')}`;
-  return `${toolbar('Reuniões', weekLabel(days[0].date, days.at(-1).date), end)}<div class="d-week">${statusHtml()}${head}${untimed}${grid}</div>`;
+  const end = `<div class="d-pager"><button class="d-tool" data-week="-1" aria-label="Semana anterior">‹</button><button class="d-tool" data-week="0" ${weekStart ? '' : 'disabled'}>Esta semana</button><button class="d-tool" data-week="1" aria-label="Próxima semana">›</button></div><button class="d-tool ${privateWeek ? 'is-on' : ''}" data-private-week aria-pressed="${privateWeek}" title="${privateWeek ? 'Mostrar a agenda' : 'Só mostrar horários ocupados'}">${ICONS.eye}</button>${deskAdd('Nova reunião', 'data-new-meeting')}`;
+  return `${toolbar('Agenda', weekLabel(days[0].date, days.at(-1).date), end)}<div class="d-week">${statusHtml()}${head}${untimed}${grid}</div>`;
 }
 
 function deskBacklog() {
@@ -1623,7 +1625,7 @@ document.addEventListener('submit', e => {
   if (!parsed.text) return;
   const section = parsed.section || lastSection();
   input.value = '';
-  commit('tasks', uid(), {text: parsed.text, section, time: parsed.time, meeting: false, repeat: '', date: today(), done: false});
+  commit('tasks', uid(), {text: parsed.text, section, time: parsed.time, end: parsed.time ? meetingEnd({time: parsed.time}) : '', meeting: false, repeat: '', date: today(), done: false});
   drawQuickChips();
 });
 document.addEventListener('input', e => {

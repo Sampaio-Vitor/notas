@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {initialState, apply, rollover, migrate, repeatsOn, lastPending, pendingOn, carryOps, scheduledTasks, sortedSections, itemKey, itemId, listed, tabPrefs, shiftMonth, scheduledBills, repeatingBills, parseQuickTask, meetingLanes, meetingEnd} from '../public/model.js';
+import {initialState, apply, rollover, migrate, repeatsOn, lastPending, pendingOn, carryOps, scheduledTasks, sortedSections, itemKey, itemId, listed, tabPrefs, shiftMonth, scheduledBills, repeatingBills, parseQuickTask, meetingLanes, meetingEnd, onAgenda} from '../public/model.js';
 
 const run = (s, ops) => ops.forEach(op => apply(s, op));
 
@@ -233,4 +233,17 @@ test('a ocorrência de uma reunião repetida leva o fim junto', () => {
   s.repeats.r = {id: 'r', text: 'Planning', section: 's1', time: '10:00', end: '11:30', days: '1', monthDay: 0, meeting: true};
   for (const op of rollover(s, '2026-10-19')) apply(s, op);
   assert.equal(s.tasks['r-r-2026-10-19'].end, '11:30');
+});
+
+test('tarefa com horário entra na agenda e a repetição leva início e fim', () => {
+  assert.equal(onAgenda({time: '09:00'}), true);
+  assert.equal(onAgenda({meeting: true, time: ''}), true);
+  assert.equal(onAgenda({time: ''}), false);
+  const s = initialState();
+  s.repeats.r = {id: 'r', text: 'Academia', section: 's1', time: '07:00', end: '08:00', days: '1', monthDay: 0};
+  s.repeats.u = {id: 'u', text: 'Ler', section: 's1', time: '', days: '1', monthDay: 0};
+  for (const op of rollover(s, '2026-10-19')) apply(s, op);
+  assert.equal(s.tasks['r-r-2026-10-19'].end, '08:00');
+  assert.equal(s.tasks['r-r-2026-10-19'].meeting, undefined);
+  assert.equal(s.tasks['r-u-2026-10-19'].end, undefined);
 });

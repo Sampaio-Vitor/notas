@@ -29,7 +29,7 @@ export function apply(state, op) {
 }
 
 // Which optional tabs a person wants (stored per person in prefs.tabs). Hoje and
-// Ajustes always show; Reuniões is off until someone turns it on.
+// Ajustes always show; Agenda (id `reunioes`, its old name) is off until someone turns it on.
 export const TAB_DEFAULTS = {reunioes: false, backlog: true, compras: true, contas: true};
 export const tabPrefs = state => ({...TAB_DEFAULTS, ...Object.fromEntries(Object.entries(state.prefs?.tabs || {}).filter(([k, v]) => k in TAB_DEFAULTS && typeof v === 'boolean'))});
 
@@ -222,7 +222,7 @@ export function rollover(state, date) {
   if (!state.days[date]) {
     add('days', date, {date});
     for (const r of live(state, 'repeats').filter(r => repeatsOn(r, date))) {
-      add('tasks', occurrenceId(r.id, date), {text: r.text, section: r.section, time: r.time || '', date, done: false, repeat: r.id, ...(r.meeting ? {meeting: true, end: r.end || ''} : {})});
+      add('tasks', occurrenceId(r.id, date), {text: r.text, section: r.section, time: r.time || '', date, done: false, repeat: r.id, ...(r.time ? {end: r.end || ''} : {}), ...(r.meeting ? {meeting: true} : {})});
     }
   }
   const month = date.slice(0, 7);
@@ -304,8 +304,10 @@ export function parseQuickTask(input, sections) {
   return {text: text.replace(/\s+/g, ' ').trim(), section, time};
 }
 
-// Meetings run from `time` to `end` ("HH:MM", same day). Ones saved before
-// meetings had an end, or with an end not after the start, last 30 minutes.
+// Anything with a time runs from `time` to `end` ("HH:MM", same day) and shows in
+// Agenda. Ones saved before they had an end, or with an end not after the start,
+// last 30 minutes.
+export const onAgenda = t => !!(t.meeting || t.time);
 export const toMinutes = time => Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5));
 export const fromMinutes = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 export const meetingEnd = m => m.end && m.end > m.time ? m.end : fromMinutes(Math.min(toMinutes(m.time) + 30, 23 * 60 + 59));
