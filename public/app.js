@@ -3,7 +3,7 @@ import {createNavigation} from './navigation.js';
 const report = message => { try { navigator.sendBeacon?.('/api/client-log', new Blob([JSON.stringify({message})], {type: 'application/json'})); } catch {} };
 addEventListener('error', e => report(`${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`));
 addEventListener('unhandledrejection', e => report(`promise: ${e.reason?.stack || e.reason}`));
-import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot} from './model.js';
+import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot, parseQuickTask, meetingLanes} from './model.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -41,6 +41,7 @@ const ICONS = {
   rep: '<svg viewBox="0 0 16 16" aria-label="Repete"><path d="M3 7a5 5 0 0 1 8.6-3.4L13 5M13 2v3h-3M13 9a5 5 0 0 1-8.6 3.4L3 11M3 14v-3h3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   check: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   plus: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  search: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M13 13l4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
   hoje: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 12.2l2.4 2.4 4.6-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   backlog: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
   reunioes: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
@@ -211,11 +212,15 @@ function taskRow(t, mode = 'edit') {
   if (mode === 'read') {
     return `<div class="n-row ${t.done ? 'is-done' : ''}"><span class="n-check" aria-hidden="true">${ICONS.check}</span><span class="n-text">${esc(t.text)}</span>${meta}</div>`;
   }
+  if (mode === 'pick') {
+    const on = selected.has(t.id);
+    return `<div class="n-row d-pick ${on ? 'is-selected' : ''} ${cursor === t.id ? 'is-cursor' : ''}" data-row="${t.id}" data-pick="${t.id}" draggable="true"><button class="n-check n-square" data-select="${t.id}" aria-pressed="${on}" aria-label="Selecionar ${esc(t.text)}">${ICONS.check}</button><span class="n-text">${esc(t.text)}</span>${meta}</div>`;
+  }
   if (mode === 'select') {
     const on = selected.has(t.id);
     return `<div class="n-row ${on ? 'is-selected' : ''}"><button class="n-check n-square" data-select="${t.id}" aria-pressed="${on}" aria-label="Selecionar ${esc(t.text)}">${ICONS.check}</button><button class="n-text" data-select="${t.id}">${esc(t.text)}</button></div>`;
   }
-  const row = `<div class="n-row ${t.done ? 'is-done' : ''}"><button class="n-check" data-toggle="${t.id}" data-collection="tasks" aria-pressed="${!!t.done}" aria-label="${t.done ? 'Desmarcar' : 'Concluir'} ${esc(t.text)}">${ICONS.check}</button><button class="n-text" data-edit-task="${t.id}">${esc(t.text)}</button>${meta}</div>`;
+  const row = `<div class="n-row ${t.done ? 'is-done' : ''} ${cursor === t.id ? 'is-cursor' : ''}" data-row="${t.id}"><button class="n-check" data-toggle="${t.id}" data-collection="tasks" aria-pressed="${!!t.done}" aria-label="${t.done ? 'Desmarcar' : 'Concluir'} ${esc(t.text)}">${ICONS.check}</button><button class="n-text" data-edit-task="${t.id}">${esc(t.text)}</button>${meta}</div>`;
   if (mode === 'swipe') return `<div class="n-swipe" data-swipe="${t.id}"><span class="n-swipe-action" aria-hidden="true">Hoje</span>${row}</div>`;
   return row;
 }
@@ -224,7 +229,7 @@ function sectionGroups(tasks, mode, count) {
   return sections().map(s => {
     const list = byTime(tasks.filter(t => t.section === s.id));
     if (!list.length) return '';
-    return `<section><div class="n-group-h"><h2>${esc(s.name)}</h2><span>${count(list)}</span></div><div class="n-list">${list.map(t => taskRow(t, mode)).join('')}</div></section>`;
+    return `<section><div class="n-group-h"><h2>${dot(s.id)}${esc(s.name)}</h2><span>${count(list)}</span></div><div class="n-list">${list.map(t => taskRow(t, mode)).join('')}</div></section>`;
   }).join('') + orphanGroup(tasks, mode, count);
 }
 // Tasks whose section no longer exists still need to be reachable.
@@ -233,9 +238,13 @@ function orphanGroup(tasks, mode, count) {
   return list.length ? `<section><div class="n-group-h"><h2>Sem seção</h2><span>${count(list)}</span></div><div class="n-list">${list.map(t => taskRow(t, mode)).join('')}</div></section>` : '';
 }
 
+function hojeBanner() {
+  const pending = lastPending(state, today());
+  return pending ? `<div class="n-banner"><p>${pending.tasks.length === 1 ? `1 tarefa ${fromDay(pending.date)} não foi feita.` : `${pending.tasks.length} tarefas ${fromDay(pending.date)} não foram feitas.`}</p><div class="n-btns"><button class="n-btn n-yellow" data-carry-last>Trazer para hoje</button><button class="n-btn n-gray" data-ignore-last>Ignorar</button></div></div>` : '';
+}
+
 function viewHoje() {
-  const tasks = todayTasks(), pending = lastPending(state, today());
-  const banner = pending ? `<div class="n-banner"><p>${pending.tasks.length === 1 ? `1 tarefa ${fromDay(pending.date)} não foi feita.` : `${pending.tasks.length} tarefas ${fromDay(pending.date)} não foram feitas.`}</p><div class="n-btns"><button class="n-btn n-yellow" data-carry-last>Trazer para hoje</button><button class="n-btn n-gray" data-ignore-last>Ignorar</button></div></div>` : '';
+  const tasks = todayTasks(), banner = hojeBanner();
   const waiting = backlog().length;
   const body = tasks.length
     ? sectionGroups(tasks, 'edit', list => `${doneCount(list)} de ${list.length}`)
@@ -262,9 +271,11 @@ function viewReunioes() {
   return `${statusHtml()}<div class="n-top"><span></span></div><h1 class="n-title">Reuniões</h1><p class="n-sub">${longDate(today())}</p>${today_}${upcoming}${laterGroup}`;
 }
 
+const agendadasGroup = waiting => waiting.length ? `<section><div class="n-group-h"><h2>Agendadas</h2><span>${waiting.length}</span></div><div class="n-list">${waiting.map(t => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-task="${t.id}"><span>${esc(t.text)}</span><span class="n-meta"><span class="n-accent">${dayShort(t.date)}</span> · ${esc(sectionName(t.section))}</span></button>${t.time ? `<span class="n-meta">${esc(shortTime(t.time))}</span>` : ''}</div>`).join('')}</div></section>` : '';
+
 function viewBacklog() {
   const tasks = backlog(), waiting = selecting ? [] : scheduled().filter(t => !(meetingsApart() && t.meeting));
-  const agendadas = waiting.length ? `<section><div class="n-group-h"><h2>Agendadas</h2><span>${waiting.length}</span></div><div class="n-list">${waiting.map(t => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-task="${t.id}"><span>${esc(t.text)}</span><span class="n-meta"><span class="n-accent">${dayShort(t.date)}</span> · ${esc(sectionName(t.section))}</span></button>${t.time ? `<span class="n-meta">${esc(shortTime(t.time))}</span>` : ''}</div>`).join('')}</div></section>` : '';
+  const agendadas = agendadasGroup(waiting);
   const head = selecting
     ? `<div class="n-top"><span></span><button class="n-link" data-select-mode>Cancelar</button></div><h1 class="n-title">Backlog</h1><p class="n-sub">${selected.size ? plural(selected.size, 'selecionada', 'selecionadas') : 'Toque nas tarefas para selecionar'}</p>`
     : `<div class="n-top"><span></span>${tasks.length ? '<button class="n-link" data-select-mode>Selecionar</button>' : ''}</div><h1 class="n-title">Backlog</h1>`;
@@ -287,23 +298,27 @@ function allBillRows() {
   return `<p class="n-note">${plural(list.length, 'conta', 'contas')} · sem limite de data</p>${list.length ? `<div class="n-list">${list.map(b => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-bill="${esc(b.id)}" data-catalog="true"><span>${esc(b.text)}</span><span class="n-meta">${b.recurring ? everyLabel(billEvery(billRule(state, b))) : 'Não repete'}${b.calcMode === 'occurrence' ? ` · ${money(b.unitAmount)}/sessão` : ''}</span><span class="n-meta n-accent">${b.month < today().slice(0, 7) ? 'Pendente' : 'Próxima'}: ${billDate(b)}</span></button><span class="n-amount">${money(b.amount)}</span>${billActions(b, true)}</div>`).join('')}</div>` : `<div class="n-empty"><p>${billSearch || billFilter !== 'all' ? 'Nenhuma conta encontrada.' : 'Nenhuma conta cadastrada.'}</p>${!billSearch && billFilter === 'all' ? '<button class="n-btn n-yellow" data-new-bill>Adicionar conta</button>' : ''}</div>`}`;
 }
 function viewAllBills() {
-  return `${statusHtml()}<div class="n-top"><span></span><button class="n-icon" data-new-bill aria-label="Adicionar conta">${ICONS.plus}</button></div><h1 class="n-title">Contas</h1>${billsSegment()}
-    <input class="n-bill-search" type="search" aria-label="Buscar conta" placeholder="Buscar conta" value="${esc(billSearch)}" data-bill-search>
+  return `${statusHtml()}<div class="n-top"><span></span><button class="n-icon" data-new-bill aria-label="Adicionar conta">${ICONS.plus}</button></div><h1 class="n-title">Contas</h1>${billsSegment()}${allBillsBody()}`;
+}
+function allBillsBody() {
+  return `<input class="n-bill-search" type="search" aria-label="Buscar conta" placeholder="Buscar conta" value="${esc(billSearch)}" data-bill-search>
     <div class="n-bill-filters" aria-label="Filtrar contas">${[['all', 'Todas'], ['recurring', 'Recorrentes'], ['single', 'Avulsas']].map(([id, label]) => `<button class="n-chip-filter ${billFilter === id ? 'is-on' : ''}" data-bill-filter="${id}" aria-pressed="${billFilter === id}">${label}</button>`).join('')}</div><div id="all-bill-rows">${allBillRows()}</div>`;
 }
 
 // Next 12 months, projected from the bills that repeat; tap a month to see its bills.
 function viewAgendadas() {
+  return `${statusHtml()}<div class="n-top"><span></span></div><h1 class="n-title">Contas</h1>${billsSegment()}${agendadasBody()}`;
+}
+function agendadasBody() {
   const months = scheduledBills(state, addMonths(today().slice(0, 7), 1), 12);
-  const head = `${statusHtml()}<div class="n-top"><span></span></div><h1 class="n-title">Contas</h1>${billsSegment()}`;
-  if (!repeatingBills(state).length) return `${head}<div class="n-empty"><p>Nenhuma conta se repete.</p><p class="n-note">Ao criar uma conta, escolha Repetir.</p></div>`;
+  if (!repeatingBills(state).length) return `<div class="n-empty"><p>Nenhuma conta se repete.</p><p class="n-note">Ao criar uma conta, escolha Repetir.</p></div>`;
   const row = m => {
     const base = m.items.filter(i => i.every === 1), extra = m.items.filter(i => i.every !== 1), open = openMonths.has(m.month);
     const summary = m.items.length ? `${esc(base.map(i => i.text).join(', '))}${extra.map(i => ` <em>+ ${esc(i.text)}</em>`).join('')}` : 'Nada agendado';
     const detail = open ? `<div class="n-month-items">${m.items.map(i => `<div class="n-month-item"><span>${esc(i.text)}<small>${i.due ? `Dia ${i.due}` : 'Sem dia'}${i.every > 1 ? ` · <i class="n-every">${everyLabel(i.every)}</i>` : ''}${i.calcMode === 'occurrence' ? ` · ${billCalcLabel(i)}` : ''}</small></span><span class="n-amount">${money(i.amount)}</span></div>`).join('')}</div>` : '';
     return `<div class="n-month"><button class="n-month-head" data-open-month="${m.month}" aria-expanded="${open}"><span class="n-month-name">${monthName(m.month)}</span><span class="n-amount">${m.items.length ? money(m.total) : ''}</span><span class="n-month-sum">${summary}</span></button>${detail}</div>`;
   };
-  return `${head}<p class="n-sub">Projeção a partir das contas que se repetem.</p><div class="n-list n-spaced">${months.map(row).join('')}</div><p class="n-note">Toque num mês para ver as contas e os valores.</p>`;
+  return `<p class="n-sub">Projeção a partir das contas que se repetem.</p><div class="n-list n-spaced">${months.map(row).join('')}</div><p class="n-note">Toque num mês para ver as contas e os valores.</p>`;
 }
 
 function viewContas() {
@@ -336,15 +351,21 @@ function viewContas() {
     ${paid.length ? `<div class="n-group-h"><h2>Pagas</h2></div><div class="n-list">${paid.map(row).join('')}</div>` : ''}`;
 }
 
-function viewCompras() {
+function shoppingParts() {
   const items = listed(state);
   const toBuy = items.filter(i => !i.done).sort((a, b) => (b.added || 0) - (a.added || 0));
   const inCart = items.filter(i => i.done).sort((a, b) => a.text.localeCompare(b.text, 'pt-BR'));
   const color = id => people.find(p => p.id === id)?.color || 'var(--secondary)';
-  const row = i => `<div class="n-row ${i.done ? 'is-done' : ''}" style="--who:${color(i.by)}"><button class="n-check n-who" data-toggle="${esc(i.id)}" data-collection="shopping" aria-pressed="${!!i.done}" aria-label="${i.done ? 'Tirar do carrinho' : 'Pôr no carrinho'}: ${esc(i.text)}">${ICONS.check}</button><button class="n-text" data-edit-item="${esc(i.id)}">${esc(i.text)}</button></div>`;
+  const row = i => `<div class="n-row ${i.done ? 'is-done' : ''}" style="--who:${color(i.by)}" data-item-row="${esc(i.id)}"><button class="n-check n-who" data-toggle="${esc(i.id)}" data-collection="shopping" aria-pressed="${!!i.done}" aria-label="${i.done ? 'Tirar do carrinho' : 'Pôr no carrinho'}: ${esc(i.text)}">${ICONS.check}</button><button class="n-text" data-edit-item="${esc(i.id)}">${esc(i.text)}</button></div>`;
   const legend = people.length > 1 ? `<p class="n-legend">${people.map(p => `<span><i style="background:${p.color}"></i>${esc(p.name)}</span>`).join('')}</p>` : '';
+  const form = `<form class="n-add" id="add-item"><input name="entry" placeholder="Adicionar item" autocomplete="off" autocapitalize="sentences" enterkeyhint="enter" maxlength="200" aria-label="Adicionar item"><button class="n-icon" data-keep-focus aria-label="Adicionar">${ICONS.plus}</button></form>`;
+  return {toBuy, inCart, row, legend, form};
+}
+
+function viewCompras() {
+  const {toBuy, inCart, row, legend, form} = shoppingParts();
   return `${statusHtml()}<div class="n-top"></div><h1 class="n-title">Compras</h1>${legend}
-    <form class="n-add" id="add-item"><input name="entry" placeholder="Adicionar item" autocomplete="off" autocapitalize="sentences" enterkeyhint="enter" maxlength="200" aria-label="Adicionar item"><button class="n-icon" data-keep-focus aria-label="Adicionar">${ICONS.plus}</button></form>
+    ${form}
     ${toBuy.length ? `<div class="n-list n-spaced">${toBuy.map(row).join('')}</div>` : inCart.length ? '' : '<p class="n-note n-spaced">Lista vazia.</p>'}
     ${inCart.length ? `<div class="n-group-h"><h2>No carrinho</h2><button class="n-link" data-clear-cart>Limpar</button></div><div class="n-list">${inCart.map(row).join('')}</div>` : ''}`;
 }
@@ -386,7 +407,7 @@ function viewAjustes() {
     <div class="n-group-h"><h2>Seções</h2></div>
     <div class="n-list" id="section-list">${sections().map(s => `<div class="n-row n-plain" data-section-row="${s.id}"><button class="n-text" data-edit-section="${s.id}">${esc(s.name)}</button><button class="n-handle" data-drag="${s.id}" aria-label="Reordenar ${esc(s.name)}. Use as setas para mover.">≡</button></div>`).join('')}
       <div class="n-row n-plain"><button class="n-text n-accent" data-new-section>Nova seção</button></div></div>
-    <p class="n-note">A ordem aqui é a ordem em Hoje e no Backlog.</p>
+    <p class="n-note">A ordem aqui é a ordem em Hoje e no Backlog${desktop() ? ' e define a cor de cada seção' : ''}.</p>
     <div class="n-group-h"><h2>Abas</h2></div>
     <div class="n-list">${[['reunioes', 'Reuniões'], ['backlog', 'Backlog'], ['compras', 'Compras'], ['contas', 'Contas']].map(([id, label]) => `<label class="n-row n-plain"><span class="n-text">${label}</span><input type="checkbox" class="n-switch" data-tab-pref="${id}" ${tabPrefs(state)[id] ? 'checked' : ''}></label>`).join('')}</div>
     <p class="n-note">Hoje e Ajustes sempre aparecem. Com Reuniões ligada, as tarefas marcadas como reunião saem do Hoje e ficam nessa aba.</p>
@@ -448,19 +469,23 @@ function pageMonthly() {
 const PAGES = {history: pageHistory, repeats: pageRepeats, monthly: pageMonthly};
 
 function render() {
-  if (dragging) return;
-  const screen = $('.page[data-name="root"] .n-screen');
+  // Replacing the rows mid-drag would cancel the drag; it renders again when it ends.
+  if (dragging || dragIds) return;
+  const screen = $('.page[data-name="root"] .n-screen'), wide = desktop();
+  document.body.dataset.layout = wide ? 'desktop' : 'phone';
   // A tab turned off (here or on another device) cannot stay selected.
   if (!visibleTabs().some(([id]) => id === tab)) tab = 'hoje';
-  // Re-rendering replaces the add field; keep what is being typed and the keyboard open.
-  const field = $('#add-item input'), typing = field && {value: field.value, focused: document.activeElement === field};
+  // Re-rendering replaces the add fields; keep what is being typed and the keyboard open.
+  const typing = ['#add-item input', '#quick-task input'].map(sel => { const field = $(sel); return field && {sel, value: field.value, focused: document.activeElement === field}; }).filter(Boolean);
   const searching = document.activeElement?.matches('[data-bill-search]');
-  if (screen) screen.innerHTML = {hoje: viewHoje, reunioes: viewReunioes, backlog: viewBacklog, compras: viewCompras, contas: viewContas, ajustes: viewAjustes}[tab]();
-  if (typing && $('#add-item input')) { $('#add-item input').value = typing.value; if (typing.focused) $('#add-item input').focus({preventScroll: true}); }
+  if (screen) screen.innerHTML = (wide ? DESK_VIEWS : {hoje: viewHoje, reunioes: viewReunioes, backlog: viewBacklog, compras: viewCompras, contas: viewContas, ajustes: viewAjustes})[tab]();
+  for (const {sel, value, focused} of typing) { const field = $(sel); if (!field) continue; field.value = value; if (focused) field.focus({preventScroll: true}); }
+  if ($('#quick-task')) drawQuickChips();
   if (searching) $('[data-bill-search]')?.focus({preventScroll: true});
-  $('#tabbar').innerHTML = visibleTabs().map(([id, label]) => `<button class="n-tab ${tab === id ? 'is-on' : ''}" data-tab="${id}" ${tab === id ? 'aria-current="page"' : ''}>${ICONS[id]}<span>${label}</span></button>`).join('');
+  $('#tabbar').innerHTML = wide ? sidebarHtml() : visibleTabs().map(([id, label]) => `<button class="n-tab ${tab === id ? 'is-on' : ''}" data-tab="${id}" ${tab === id ? 'aria-current="page"' : ''}>${ICONS[id]}<span>${label}</span></button>`).join('');
   let float = '';
-  if (tab === 'backlog' && selecting) float = `<button class="n-btn n-yellow n-wide" data-move-selected ${selected.size ? '' : 'disabled'}>${selected.size ? `Mover ${selected.size} para hoje` : 'Selecione tarefas'}</button>`;
+  if (wide) float = tab === 'backlog' && selected.size ? backlogActions() : '';
+  else if (tab === 'backlog' && selecting) float = `<button class="n-btn n-yellow n-wide" data-move-selected ${selected.size ? '' : 'disabled'}>${selected.size ? `Mover ${selected.size} para hoje` : 'Selecione tarefas'}</button>`;
   else if (tab === 'reunioes') float = `<button class="n-quick" data-new-meeting>${ICONS.plus}<span>Nova reunião</span></button>`;
   else if ((tab === 'hoje' && todayTasks().length) || (tab === 'backlog' && (backlog().length || scheduled().length))) float = `<button class="n-quick" data-new-task>${ICONS.plus}<span>Nova tarefa</span></button>`;
   $('#float').innerHTML = float;
@@ -474,7 +499,9 @@ function render() {
 }
 
 function switchTab(id) {
-  if (id !== tab) { tab = id; selecting = false; selected.clear(); }
+  if (id !== tab) { tab = id; selecting = false; selected.clear(); cursor = null; }
+  // The sidebar stays visible over secondary pages; choosing an area leaves them.
+  if (desktop() && navigation.current !== 'root') navigation.back();
   if (id === 'ajustes' && protectedServer && passkeySupported) void prepareRegister();
   render();
   const content = $('.page[data-name="root"] .page-content');
@@ -509,7 +536,7 @@ const sheetTop = (title, ok = 'Salvar') => `<div class="n-sheet-top"><button typ
 function autosize(el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; }
 
 // Edits a task (from Hoje/Backlog) or, with {repeatId}, the repeat itself.
-function taskSheet({id, repeatId, when, meeting: asMeeting} = {}) {
+function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, time: presetTime} = {}) {
   const task = id ? state.tasks[id] : null;
   const repeat = state.repeats[repeatId || task?.repeat] && !state.repeats[repeatId || task?.repeat].deleted ? state.repeats[repeatId || task?.repeat] : null;
   const editingRepeat = !!repeatId;
@@ -528,9 +555,9 @@ function taskSheet({id, repeatId, when, meeting: asMeeting} = {}) {
     <fieldset class="n-fieldset"><legend>Seção</legend><div class="n-chips">${sections().map(s => `<label class="n-chip"><input type="radio" name="section" value="${s.id}" ${s.id === section ? 'checked' : ''}><span>${esc(s.name)}</span></label>`).join('')}</div></fieldset>
     ${editingRepeat ? '' : `<fieldset class="n-seg"><legend class="n-sr">Quando</legend>${[['today', 'Hoje'], ['later', 'Outro dia'], ['backlog', 'Backlog']].filter(([v]) => v !== 'backlog' || tabPrefs(state).backlog || isBacklog).map(([v, l]) => `<label><input type="radio" name="when" value="${v}" ${v === initialWhen ? 'checked' : ''}><span>${l}</span></label>`).join('')}</fieldset>`}
     <div class="n-opts" data-today-only>
-      <label class="n-opt" data-later-only>Data<input type="date" name="date" min="${addDays(today(), 1)}" value="${initialWhen === 'later' ? task.date : addDays(today(), 1)}"></label>
+      <label class="n-opt" data-later-only>Data<input type="date" name="date" min="${addDays(today(), 1)}" value="${initialWhen === 'later' ? task?.date || presetDate : addDays(today(), 1)}"></label>
       <label class="n-opt">Reunião<input type="checkbox" class="n-switch" name="meeting" ${isMeeting ? 'checked' : ''}></label>
-      <label class="n-opt">Horário<input type="time" name="time" value="${esc(source?.time || '')}"></label>
+      <label class="n-opt">Horário<input type="time" name="time" value="${esc(source?.time || presetTime || '')}"></label>
       <label class="n-opt" data-repeat-only>Repetir<select name="rule">
         ${[['none', 'Não repete'], ['daily', 'Todo dia'], ['weekdays', 'Dias úteis'], ['custom', 'Dias escolhidos'], ['monthly', 'Todo mês']].filter(([v]) => !editingRepeat || v !== 'none').map(([v, l]) => `<option value="${v}" ${v === kind ? 'selected' : ''}>${l}</option>`).join('')}
       </select></label>
@@ -992,6 +1019,12 @@ document.addEventListener('click', e => {
   if (suppressClick) { suppressClick = false; e.preventDefault(); return; }
   const d = b.dataset;
   if (d.tab) switchTab(d.tab);
+  else if ('find' in d) openFinder(d.find);
+  else if (d.finderI) runFinder(Number(d.finderI));
+  else if (d.ctx) menuAction(d);
+  else if (d.week) { weekStart = d.week === '0' ? null : addDays(weekStart || mondayOf(today()), 7 * Number(d.week)); render(); }
+  else if ('deleteSelected' in d) { deleteTasks([...selected]); selected.clear(); render(); }
+  else if ('clearSelection' in d) { selected.clear(); render(); }
   else if ('close' in d) closeSheet();
   else if ('back' in d) navigation.back();
   else if (d.toggle) { const c = d.collection; commit(c, d.toggle, {done: !state[c][d.toggle].done}); }
@@ -1128,6 +1161,472 @@ document.addEventListener('submit', e => {
   input.focus({preventScroll: true});
 });
 document.addEventListener('pointerdown', e => { if (e.target.closest('[data-keep-focus]')) e.preventDefault(); });
+
+// ---------- Desktop ----------
+// From 960px wide (the app installed on a computer) the same data gets a sidebar,
+// a toolbar and layouts that use the width: Hoje with a side column, Reuniões as a
+// week, Contas as a table. Mouse and keyboard replace swipes and long presses.
+
+const wideQuery = matchMedia('(min-width: 960px)');
+const desktop = () => wideQuery.matches;
+wideQuery.addEventListener('change', () => { selecting = false; selected.clear(); cursor = null; closeFinder(); closeMenu(); render(); });
+const KEY = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? '⌘' : 'Ctrl+';
+// Week shown in Reuniões (its Monday; null follows today), keyboard cursor, range anchor.
+let weekStart = null, cursor = null, anchor = null, finder = null, dragIds = null;
+
+// Sections have no color of their own; the order in Ajustes picks one.
+const SECTION_COLORS = ['#64d2ff', '#bf5af2', '#ff9f0a', '#30d158', '#ff375f', '#5e5ce6', '#ffd60a', '#ac8e68'];
+function sectionColor(id) {
+  const i = sections().findIndex(s => s.id === id);
+  return i < 0 ? '#8e8e93' : SECTION_COLORS[i % SECTION_COLORS.length];
+}
+const dot = id => `<i class="d-dot" style="background:${sectionColor(id)}" aria-hidden="true"></i>`;
+const minutes = time => Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5));
+const clock = m => `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
+const nowMinutes = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
+const mondayOf = date => addDays(date, -((weekday(date) + 6) % 7));
+const mainTabs = () => visibleTabs().filter(([id]) => id !== 'ajustes');
+
+function sidebarHtml() {
+  const month = today().slice(0, 7);
+  const counts = {hoje: todayTasks().filter(t => !t.done).length, reunioes: todayMeetings().filter(t => !t.done).length, backlog: backlog().length, compras: listed(state).filter(i => !i.done).length, contas: live(state, 'bills').filter(b => b.month === month && !b.done).length};
+  const nav = mainTabs().map(([id, label], i) => `<button class="d-nav ${tab === id ? 'is-on' : ''}" data-tab="${id}" ${id === 'hoje' ? 'data-drop-today' : ''} ${tab === id ? 'aria-current="page"' : ''} title="${label} (${KEY}${i + 1})">${ICONS[id]}<span>${label}</span><em>${counts[id] || ''}</em></button>`).join('');
+  const pending = live(state, 'tasks').filter(t => !t.done && (t.date === '' || t.date === today()));
+  const secs = sections().map(s => { const n = pending.filter(t => t.section === s.id).length; return `<button class="d-sec" data-find="${esc(s.name)}" title="Buscar em ${esc(s.name)}">${dot(s.id)}<span>${esc(s.name)}</span><em>${n || ''}</em></button>`; }).join('');
+  const sync = needsLogin ? '<button class="d-sync is-off" data-login>Entre para sincronizar</button>'
+    : `<span class="d-sync ${online ? '' : 'is-off'}">${!online ? 'Sem conexão' : queue.length ? 'Enviando…' : 'Sincronizado'}</span>`;
+  const who = me ? `<span class="n-avatar d-avatar" style="background:${me.color || 'var(--yellow)'}" aria-hidden="true">${esc(me.name[0])}</span><span class="d-who"><b>${esc(me.name)}</b>${sync}</span>` : `<span class="d-who">${sync}</span>`;
+  return `<div class="d-side-top"></div><div class="d-navs">${nav}</div><h2 class="d-side-h">Seções</h2><div class="d-secs">${secs}</div>
+    <div class="d-side-foot">${who}<button class="d-gear ${tab === 'ajustes' ? 'is-on' : ''}" data-tab="ajustes" aria-label="Ajustes" title="Ajustes (${KEY},)">${ICONS.ajustes}</button></div>`;
+}
+
+function toolbar(title, sub, end = '') {
+  return `<header class="d-tb"><div class="d-tb-title"><h1>${title}</h1>${sub ? `<p>${sub}</p>` : ''}</div><div class="d-tb-end">${end}<button class="d-search" data-find="" title="Buscar (${KEY}K)">${ICONS.search}<span>Buscar</span><kbd>${KEY}K</kbd></button></div></header>`;
+}
+const deskAdd = (label, attr) => `<button class="d-add" ${attr}>${ICONS.plus}<span>${label}</span></button>`;
+
+function deskHoje() {
+  const tasks = todayTasks();
+  const sub = `${longDate(today())}${tasks.length ? ` · ${doneCount(tasks)} de ${tasks.length} feitas` : ''}`;
+  const end = `<button class="d-tool" data-open-history>${ICONS.cal}<span>Dias anteriores</span></button>${deskAdd('Nova tarefa', 'data-new-task')}`;
+  const example = sections()[0]?.name.split(' ')[0] || 'seção';
+  const quick = `<form class="d-quick" id="quick-task">${ICONS.plus}<input name="entry" placeholder="Nova tarefa para hoje. Ex.: Revisar PR 15h #${esc(example)}" autocomplete="off" maxlength="10000" aria-label="Nova tarefa para hoje" aria-describedby="quick-chips"><kbd>N</kbd></form><div class="d-chips" id="quick-chips" aria-live="polite"></div>`;
+  const body = tasks.length ? sectionGroups(tasks, 'edit', list => `${doneCount(list)} de ${list.length}`) : '<p class="d-empty">Nada para hoje. Escreva acima e tecle Return.</p>';
+  return `${toolbar('Hoje', sub, end)}<div class="d-split"><div class="d-main">${statusHtml()}${hojeBanner()}${quick}${body}</div>${hojeRail()}</div>`;
+}
+
+function drawQuickChips() {
+  const input = $('#quick-task input'), out = $('#quick-chips');
+  if (!input || !out) return;
+  const parsed = parseQuickTask(input.value, sections()), section = parsed.section || lastSection();
+  out.innerHTML = parsed.text ? `<span class="d-chip">${dot(section)}${esc(sectionName(section))}</span>${parsed.time ? `<span class="d-chip">${shortTime(parsed.time)}</span>` : ''}<span class="d-chip-hint">Return adiciona em Hoje</span>` : '';
+}
+
+function hojeRail() {
+  const prefs = tabPrefs(state), cards = [], now = nowMinutes();
+  const meetings = byTime(todayMeetings());
+  if (prefs.reunioes || meetings.length) {
+    let marked = false;
+    const rows = meetings.map(t => {
+      const start = t.time ? minutes(t.time) : null, soon = start !== null && start > now && start - now <= 60;
+      const line = !marked && start !== null && start > now ? (marked = true, `<div class="d-now"><b>${clock(now)}</b><hr></div>`) : '';
+      return `${line}<button class="d-ev ${t.done || (start !== null && start + 30 <= now) ? 'is-past' : ''}" data-edit-task="${t.id}"><b>${t.time ? esc(shortTime(t.time)) : '·'}</b><span style="--c:${sectionColor(t.section)}">${esc(t.text)}<small class="${soon ? 'n-accent' : ''}">${soon ? `em ${start - now} min` : esc(sectionName(t.section))}</small></span></button>`;
+    }).join('');
+    cards.push(`<section class="d-card"><div class="d-card-h"><h2>Reuniões de hoje</h2>${prefs.reunioes ? '<button class="n-link" data-tab="reunioes">Semana</button>' : ''}</div>${rows || '<p class="d-card-empty">Nenhuma reunião hoje.</p>'}</section>`);
+  }
+  if (prefs.contas) {
+    const day = Number(today().slice(8, 10));
+    const due = live(state, 'bills').filter(b => b.month === today().slice(0, 7) && !b.done).sort((a, b) => (a.due || 99) - (b.due || 99)).slice(0, 4);
+    const rows = due.map(b => { const late = b.due && b.due < day; return `<button class="d-mini" data-edit-bill="${esc(b.id)}"><span>${esc(b.text)}<small class="${late ? 'is-late' : ''}">${b.due ? `${late ? 'Venceu' : 'Vence'} dia ${b.due}` : 'Sem dia'}</small></span><span class="n-amount">${money(b.amount)}</span></button>`; }).join('');
+    cards.push(`<section class="d-card"><div class="d-card-h"><h2>Contas a pagar</h2><button class="n-link" data-tab="contas">Ver todas</button></div>${rows || '<p class="d-card-empty">Tudo pago neste mês.</p>'}</section>`);
+  }
+  if (prefs.compras) {
+    const {toBuy} = shoppingParts(), color = id => people.find(p => p.id === id)?.color || 'var(--secondary)';
+    const rows = toBuy.slice(0, 5).map(i => `<button class="d-mini" data-tab="compras"><i class="d-ring" style="--who:${color(i.by)}"></i><span>${esc(i.text)}</span></button>`).join('');
+    cards.push(`<section class="d-card"><div class="d-card-h"><h2>Compras</h2><button class="n-link" data-tab="compras">${toBuy.length > 5 ? `Mais ${toBuy.length - 5}` : 'Abrir'}</button></div>${rows || '<p class="d-card-empty">Lista vazia.</p>'}</section>`);
+  }
+  return `<aside class="d-rail" aria-label="Resumo do dia">${cards.join('')}</aside>`;
+}
+
+// Meetings of one day: the ones already on that date (one-off, or a repeat's
+// occurrence) plus the repeats whose occurrence was not created for it, such as
+// future days or days the app was not opened.
+function weekMeetings(date) {
+  const projected = live(state, 'repeats').filter(r => r.meeting && repeatsOn(r, date) && !state.tasks[occurrenceId(r.id, date)]).map(r => ({...r, repeats: true}));
+  return [...tasksOn(date).filter(t => t.meeting), ...projected];
+}
+function weekLabel(first, last) {
+  const day = d => Number(d.slice(8, 10)), month = d => MONTHS[Number(d.slice(5, 7)) - 1];
+  return first.slice(0, 7) === last.slice(0, 7) ? `${day(first)} a ${day(last)} de ${month(last)}` : `${day(first)} de ${month(first)} a ${day(last)} de ${month(last)}`;
+}
+
+function deskReunioes() {
+  const monday = weekStart || mondayOf(today()), now = nowMinutes(), HOUR = 56;
+  const days = Array.from({length: 7}, (_, i) => addDays(monday, i)).map(date => ({date, list: weekMeetings(date)})).filter((d, i) => i < 5 || d.list.length);
+  const starts = days.flatMap(d => d.list.filter(m => m.time).map(m => minutes(m.time)));
+  const first = Math.min(8 * 60, ...starts.map(m => Math.floor(m / 60) * 60)), last = Math.max(19 * 60, ...starts.map(m => Math.ceil((m + 30) / 60) * 60));
+  const y = m => (m - first) / 60 * HOUR;
+  const cols = `--days:${days.length}`;
+  const block = (m, date) => {
+    const start = minutes(m.time), gone = m.done || date < today() || (date === today() && start + 30 <= now);
+    const open = m.repeats ? `data-edit-repeat="${m.id}"` : `data-edit-task="${m.id}" data-row="${m.id}"`;
+    return `<button class="d-evt ${gone ? 'is-past' : ''} ${m.done ? 'is-done' : ''}" ${open} style="--c:${sectionColor(m.section)};top:${y(start) + 1}px;height:${HOUR / 2 - 2}px;left:calc(${m.lane} * 100% / ${m.lanes} + 3px);width:calc(100% / ${m.lanes} - 6px)" title="${esc(m.text)}, ${shortTime(m.time)} · ${esc(sectionName(m.section))}${m.repeats ? ` · ${esc(repeatLabel(m))}` : ''}"><b>${esc(m.text)}</b><span>${shortTime(m.time)}</span></button>`;
+  };
+  const head = `<div class="d-wk-h" style="${cols}"><span></span>${days.map(d => `<div class="d-wk-day ${d.date === today() ? 'is-today' : ''}"><small>${WEEK[weekday(d.date)].slice(0, 3)}</small><b>${Number(d.date.slice(8, 10))}</b></div>`).join('')}</div>`;
+  const untimed = days.some(d => d.list.some(m => !m.time))
+    ? `<div class="d-wk-all" style="${cols}"><span>Sem horário</span>${days.map(d => `<div>${d.list.filter(m => !m.time).map(m => `<button class="d-chip d-evt-chip ${m.done ? 'is-done' : ''}" ${m.repeats ? `data-edit-repeat="${m.id}"` : `data-edit-task="${m.id}"`} style="--c:${sectionColor(m.section)}">${esc(m.text)}</button>`).join('')}</div>`).join('')}</div>` : '';
+  const hours = [];
+  for (let m = first + 60; m < last; m += 60) hours.push(`<span style="top:${y(m)}px">${clock(m)}</span>`);
+  const nowLine = days.some(d => d.date === today()) && now >= first && now <= last;
+  const grid = `<div class="d-wk-b" style="${cols};height:${y(last)}px"><div class="d-wk-gut">${hours.join('')}${nowLine ? `<span class="is-now" style="top:${y(now)}px">${clock(now)}</span>` : ''}</div>
+    ${days.map(d => `<div class="d-wk-col ${d.date === today() ? 'is-today' : ''}" data-slot-day="${d.date}" data-first="${first}" data-hour="${HOUR}" style="--hour:${HOUR}px">${meetingLanes(d.list.filter(m => m.time).map(m => ({...m, start: minutes(m.time)}))).map(m => block(m, d.date)).join('')}${d.date === today() && nowLine ? `<div class="d-wk-now" style="top:${y(now)}px"></div>` : ''}</div>`).join('')}</div>`;
+  const end = `<div class="d-pager"><button class="d-tool" data-week="-1" aria-label="Semana anterior">‹</button><button class="d-tool" data-week="0" ${weekStart ? '' : 'disabled'}>Esta semana</button><button class="d-tool" data-week="1" aria-label="Próxima semana">›</button></div>${deskAdd('Nova reunião', 'data-new-meeting')}`;
+  return `${toolbar('Reuniões', weekLabel(days[0].date, days.at(-1).date), end)}<div class="d-week">${statusHtml()}${head}${untimed}${grid}<p class="d-hint">Clique duas vezes num horário livre para marcar uma reunião. Cada bloco ocupa meia hora.</p></div>`;
+}
+
+function deskBacklog() {
+  const tasks = backlog(), waiting = scheduled().filter(t => !(meetingsApart() && t.meeting));
+  const body = tasks.length ? sectionGroups(tasks, 'pick', list => list.length)
+    : waiting.length ? '' : '<div class="n-empty"><p>Backlog vazio.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-task>Nova tarefa</button></div></div>';
+  const hint = tasks.length ? `<p class="d-hint">Clique para selecionar, ${KEY === '⌘' ? '⌘' : 'Ctrl'}-clique para somar e Shift-clique para um intervalo. Arraste até Hoje, na barra lateral, ou use ${KEY}Return.</p>` : '';
+  return `${toolbar('Backlog', plural(tasks.length, 'tarefa', 'tarefas'), deskAdd('Nova tarefa', 'data-new-task'))}<div class="d-main d-narrow">${statusHtml()}${agendadasGroup(waiting)}${body}${hint}</div>`;
+}
+function backlogActions() {
+  const n = selected.size;
+  return `<div class="d-actbar" role="toolbar" aria-label="Tarefas selecionadas"><b>${plural(n, 'selecionada', 'selecionadas')}</b><button class="d-add" data-move-selected>Mover para Hoje<kbd>${KEY}↩</kbd></button><button class="d-tool is-danger" data-delete-selected>Excluir</button><button class="d-tool" data-clear-selection aria-label="Limpar seleção" title="Limpar seleção (esc)">✕</button></div>`;
+}
+
+function deskContas() {
+  const current = today().slice(0, 7), prev = addMonths(billMonth, -1), next = addMonths(billMonth, 1);
+  const pager = billsView === 'mes' ? `<div class="d-pager"><button class="d-tool" data-month="${prev}" aria-label="${monthName(prev)}">‹</button>${billMonth === current ? '' : `<button class="d-tool" data-month="${current}">Este mês</button>`}<button class="d-tool" data-month="${next}" aria-label="${monthName(next)}" ${billMonth < current ? '' : 'disabled'}>›</button></div>` : '';
+  const title = billsView === 'mes' ? monthName(billMonth) : 'Contas';
+  const sub = {mes: 'Contas do mês', agendadas: 'Próximos 12 meses', todas: 'Todas as contas cadastradas'}[billsView];
+  const body = billsView === 'todas' ? allBillsBody() : billsView === 'agendadas' ? agendadasBody() : billTable();
+  return `${toolbar(title, sub, `${pager}${billsSegment()}${deskAdd('Nova conta', 'data-new-bill')}`)}<div class="d-main ${billsView === 'mes' ? 'd-wide' : 'd-narrow'}">${statusHtml()}${body}</div>`;
+}
+
+function billTable() {
+  const current = today().slice(0, 7), day = Number(today().slice(8, 10));
+  const bills = live(state, 'bills').filter(b => b.month === billMonth);
+  if (!bills.length) return `<div class="n-empty"><p>Nenhuma conta em ${MONTHS[Number(billMonth.slice(5, 7)) - 1]}.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-bill>Adicionar conta</button></div></div>`;
+  const sortDue = list => [...list].sort((a, b) => (a.due || 99) - (b.due || 99) || a.text.localeCompare(b.text));
+  const unpaid = sortDue(bills.filter(b => !b.done)), paid = sortDue(bills.filter(b => b.done));
+  const sum = list => list.reduce((n, b) => n + (b.amount || 0), 0), left = sum(unpaid), total = sum(bills);
+  const late = b => b.due && !b.done && (billMonth < current || (billMonth === current && b.due < day));
+  const overdue = unpaid.filter(late), next = billMonth === current ? unpaid.find(b => b.due && !late(b)) : null;
+  const lastDay = new Date(Number(billMonth.slice(0, 4)), Number(billMonth.slice(5, 7)), 0).getDate();
+  const nextDay = next && `${billMonth}-${String(Math.min(next.due, lastDay)).padStart(2, '0')}`;
+  const stats = `<div class="d-stats">
+    <div class="d-stat is-big"><span>${left ? 'Falta pagar' : 'Tudo pago'}</span><strong>${money(left)}</strong><div class="n-bar" role="progressbar" aria-valuemin="0" aria-valuemax="${bills.length}" aria-valuenow="${paid.length}" aria-label="Contas pagas"><span style="width:${paid.length / bills.length * 100}%"></span></div><small>${paid.length} de ${bills.length} pagas · ${money(total)} no mês</small></div>
+    <div class="d-stat ${overdue.length ? 'is-late' : ''}"><span>Atrasadas</span><strong>${overdue.length ? esc(overdue.map(b => b.text).join(', ')) : 'Nenhuma'}</strong><small>${overdue.length ? money(sum(overdue)) : 'Tudo em dia'}</small></div>
+    ${billMonth === current ? `<div class="d-stat"><span>Próximo vencimento</span><strong>${next ? esc(next.text) : 'Nenhum'}</strong><small>${next ? `${WEEK[weekday(nextDay)].toLowerCase()}, dia ${next.due} · ${money(next.amount)}` : 'Nada mais a vencer neste mês'}</small></div>` : ''}
+  </div>`;
+  const row = b => `<tr class="${b.done ? 'is-done' : ''}" data-bill-row="${esc(b.id)}">
+    <td class="d-c-check"><button class="n-check" data-toggle="${esc(b.id)}" data-collection="bills" aria-pressed="${!!b.done}" aria-label="${b.done ? 'Desmarcar' : 'Marcar como paga'} ${esc(b.text)}">${ICONS.check}</button></td>
+    <td><button class="d-c-name" data-edit-bill="${esc(b.id)}">${esc(b.text)}${b.calcMode === 'occurrence' ? `<small>${billCalcLabel(b)}</small>` : ''}</button></td>
+    <td class="${late(b) ? 'is-late' : ''}">${late(b) ? `Venceu dia ${b.due}` : b.due ? `Dia ${b.due}` : 'Sem dia'}${b.done ? ' <small>paga</small>' : ''}</td>
+    <td>${b.repeat !== false ? cap(everyLabel(billEvery(b))) : 'Não repete'}</td>
+    <td class="d-num">${money(b.amount)}</td>
+    <td class="d-c-more">${billActions(b)}</td></tr>`;
+  return `${stats}<table class="d-table"><thead><tr><th><span class="n-sr">Paga</span></th><th>Conta</th><th>Vencimento</th><th>Repetição</th><th class="d-num">Valor</th><th><span class="n-sr">Ações</span></th></tr></thead>
+    <tbody>${unpaid.map(row).join('')}${paid.length ? `<tr class="d-t-group"><td colspan="6">Pagas</td></tr>${paid.map(row).join('')}` : ''}</tbody></table>`;
+}
+
+function deskCompras() {
+  const {toBuy, inCart, row, legend, form} = shoppingParts();
+  return `${toolbar('Compras', people.length > 1 ? 'Lista compartilhada' : '')}<div class="d-main d-wide">${statusHtml()}${legend}${form}
+    <div class="d-cols">
+      <section><div class="n-group-h"><h2>Para comprar</h2><span>${toBuy.length}</span></div>${toBuy.length ? `<div class="n-list">${toBuy.map(row).join('')}</div>` : '<p class="d-empty">Lista vazia. Escreva acima e tecle Return.</p>'}</section>
+      <section><div class="n-group-h"><h2>No carrinho</h2>${inCart.length ? '<button class="n-link" data-clear-cart>Limpar</button>' : '<span>0</span>'}</div>${inCart.length ? `<div class="n-list">${inCart.map(row).join('')}</div>` : '<p class="d-empty">Marque o círculo de um item ao pegá-lo.</p>'}</section>
+    </div></div>`;
+}
+
+const deskAjustes = () => `${toolbar('Ajustes', '')}<div class="d-main d-narrow d-legacy">${viewAjustes()}</div>`;
+const DESK_VIEWS = {hoje: deskHoje, reunioes: deskReunioes, backlog: deskBacklog, compras: deskCompras, contas: deskContas, ajustes: deskAjustes};
+
+function newTask() {
+  if (tab === 'hoje' && $('#quick-task input')) return $('#quick-task input').focus();
+  taskSheet(tab === 'reunioes' ? {when: 'today', meeting: true} : {when: tab === 'backlog' ? 'backlog' : 'today'});
+}
+
+function deleteTasks(ids) {
+  const copies = ids.map(id => state.tasks[id]).filter(t => t && !t.deleted).map(({id, deleted, ...rest}) => rest);
+  if (!copies.length) return;
+  commitMany(ids.map(id => ({collection: 'tasks', id, patch: {deleted: true}})));
+  if (ids.includes(cursor)) cursor = null;
+  // Deleted records stay deleted; undoing brings back a copy.
+  toast(copies.length === 1 ? 'Tarefa excluída.' : `${copies.length} tarefas excluídas.`, () => {
+    commitMany(copies.map(task => ({collection: 'tasks', id: uid(), patch: task})));
+    toast('Exclusão desfeita.');
+  });
+}
+
+// ----- Busca (⌘K) -----
+
+function finderItems(q) {
+  const key = itemKey(q), prefs = tabPrefs(state);
+  const go = [...mainTabs().map(([id, label], i) => ({group: 'Ir para', icon: ICONS[id], text: label, hint: `${KEY}${i + 1}`, run: () => switchTab(id)})), {group: 'Ir para', icon: ICONS.ajustes, text: 'Ajustes', hint: `${KEY},`, run: () => switchTab('ajustes')}];
+  const actions = [
+    {group: 'Ações', icon: ICONS.plus, text: 'Nova tarefa', hint: 'N', run: () => taskSheet({when: 'today'})},
+    prefs.reunioes && {group: 'Ações', icon: ICONS.reunioes, text: 'Nova reunião', run: () => taskSheet({when: 'today', meeting: true})},
+    prefs.contas && {group: 'Ações', icon: ICONS.contas, text: 'Nova conta', run: () => billSheet()},
+    {group: 'Ações', icon: ICONS.cal, text: 'Dias anteriores', run: () => { historyDate = defaultHistoryDate(); navigation.push('history'); }},
+  ].filter(Boolean);
+  if (!key) return [...go, ...actions];
+  const where = t => t.date === '' ? 'Backlog' : t.date === today() ? 'Hoje' : dayShort(t.date);
+  const tasks = live(state, 'tasks').filter(t => t.date === '' || t.date >= today()).sort((a, b) => (a.date || '9').localeCompare(b.date || '9'))
+    .map(t => ({group: t.meeting ? 'Reuniões' : 'Tarefas', color: sectionColor(t.section), text: t.text, sub: `${where(t)} · ${sectionName(t.section)}${t.time ? ` · ${shortTime(t.time)}` : ''}${t.done ? ' · feita' : ''}`, run: () => taskSheet({id: t.id})}));
+  const repeats = live(state, 'repeats').map(r => ({group: 'Repetições', color: sectionColor(r.section), text: r.text, sub: `${repeatLabel(r)}${r.time ? `, ${shortTime(r.time)}` : ''} · ${sectionName(r.section)}`, run: () => taskSheet({repeatId: r.id})}));
+  const bills = prefs.contas ? live(state, 'bills').filter(b => b.month === today().slice(0, 7)).map(b => ({group: 'Contas', icon: ICONS.contas, text: b.text, sub: `${b.done ? 'Paga' : b.due ? `Dia ${b.due}` : 'Sem dia'} · ${money(b.amount)}`, run: () => billSheet(b.id)})) : [];
+  const shop = prefs.compras ? listed(state).map(i => ({group: 'Compras', icon: ICONS.compras, text: i.text, sub: i.done ? 'No carrinho' : 'Para comprar', run: () => switchTab('compras')})) : [];
+  return [...go, ...actions, ...tasks, ...repeats, ...bills, ...shop].filter(x => itemKey(`${x.text} ${x.sub || ''} ${x.group}`).includes(key)).slice(0, 40);
+}
+function openFinder(q = '') {
+  closeMenu();
+  finder = {q, i: 0, items: []};
+  const el = $('#finder');
+  el.innerHTML = `<div class="d-finder-box" role="dialog" aria-modal="true" aria-label="Buscar"><label class="d-finder-in">${ICONS.search}<input id="finder-q" value="${esc(q)}" placeholder="Buscar tarefas, reuniões, contas e comandos" autocomplete="off" role="combobox" aria-expanded="true" aria-controls="finder-list"><kbd>esc</kbd></label><div class="d-finder-list" id="finder-list" role="listbox"></div><p class="d-finder-foot">↑↓ para escolher · Return para abrir</p></div>`;
+  el.hidden = false;
+  drawFinder();
+  const input = $('#finder-q'); input.focus(); input.setSelectionRange(q.length, q.length);
+}
+function drawFinder() {
+  finder.items = finderItems(finder.q);
+  finder.i = Math.min(finder.i, Math.max(0, finder.items.length - 1));
+  let group = '';
+  $('#finder-list').innerHTML = finder.items.map((x, i) => `${x.group !== group ? `<p class="d-finder-g">${esc(group = x.group)}</p>` : ''}<button class="d-finder-i ${i === finder.i ? 'is-on' : ''}" data-finder-i="${i}" role="option" aria-selected="${i === finder.i}" tabindex="-1">${x.color ? `<i style="background:${x.color}"></i>` : x.icon}<span>${esc(x.text)}${x.sub ? `<small>${esc(x.sub)}</small>` : ''}</span>${x.hint ? `<kbd>${x.hint}</kbd>` : ''}</button>`).join('')
+    || `<p class="d-finder-empty">Nada encontrado para “${esc(finder.q)}”.</p>`;
+  $('.d-finder-i.is-on')?.scrollIntoView({block: 'nearest'});
+}
+function closeFinder() {
+  if (!finder) return;
+  finder = null; $('#finder').hidden = true; $('#finder').innerHTML = '';
+}
+function runFinder(i) { const item = finder?.items[i]; closeFinder(); item?.run(); }
+$('#finder').addEventListener('mousedown', e => { if (e.target === $('#finder')) closeFinder(); });
+$('#finder').addEventListener('mousemove', e => {
+  const item = e.target.closest('[data-finder-i]');
+  if (!item || !finder || Number(item.dataset.finderI) === finder.i) return;
+  finder.i = Number(item.dataset.finderI);
+  $$('.d-finder-i').forEach(b => { const on = b === item; b.classList.toggle('is-on', on); b.setAttribute('aria-selected', on); });
+});
+
+// ----- Menu de contexto -----
+
+const menuItem = (label, attrs, key = '', extra = '') => `<button class="d-mi ${extra}" role="menuitem" ${attrs}><span>${label}</span>${key ? `<kbd>${key}</kbd>` : ''}</button>`;
+function taskMenu(id) {
+  const t = state.tasks[id];
+  if (!t || t.deleted) return '';
+  const others = sections().filter(s => s.id !== t.section);
+  return [
+    menuItem(t.done ? 'Reabrir' : 'Concluir', `data-ctx="done" data-id="${id}"`, tab === 'backlog' ? '' : 'Espaço'),
+    menuItem('Editar…', `data-ctx="edit" data-id="${id}"`, '↩'),
+    t.date !== today() ? menuItem('Mover para hoje', `data-ctx="today" data-id="${id}"`, tab === 'backlog' ? `${KEY}↩` : '') : '',
+    t.date !== '' && tabPrefs(state).backlog ? menuItem('Mover para o Backlog', `data-ctx="backlog" data-id="${id}"`) : '',
+    others.length ? `<div class="d-mi d-has" role="menuitem" aria-haspopup="menu" tabindex="-1"><span>Mover para a seção</span><span class="d-arrow" aria-hidden="true">›</span><div class="d-ctx d-sub" role="menu">${others.map(s => menuItem(`${dot(s.id)}${esc(s.name)}`, `data-ctx="section" data-id="${id}" data-section="${s.id}"`)).join('')}</div></div>` : '',
+    '<hr>',
+    menuItem('Excluir', `data-ctx="delete" data-id="${id}"`, '⌫', 'is-danger'),
+  ].join('');
+}
+function billMenu(id) {
+  const b = state.bills[id];
+  if (!b || b.deleted || b.skipped) return '';
+  return [menuItem(b.done ? 'Desmarcar como paga' : 'Marcar como paga', `data-ctx="pay" data-id="${esc(id)}"`), menuItem('Editar…', `data-ctx="bill-edit" data-id="${esc(id)}"`), '<hr>', menuItem('Excluir…', `data-ctx="bill-delete" data-id="${esc(id)}"`, '', 'is-danger')].join('');
+}
+function itemMenu(id) {
+  const i = state.shopping[id];
+  if (!i || i.deleted) return '';
+  return [menuItem(i.done ? 'Tirar do carrinho' : 'Pôr no carrinho', `data-ctx="item-done" data-id="${esc(id)}"`), menuItem('Editar…', `data-ctx="item-edit" data-id="${esc(id)}"`), '<hr>', menuItem('Remover da lista', `data-ctx="item-remove" data-id="${esc(id)}"`, '', 'is-danger')].join('');
+}
+function openMenu(x, y, html) {
+  const el = $('#ctx');
+  el.innerHTML = html; el.hidden = false;
+  el.style.left = `${Math.max(8, Math.min(x, innerWidth - el.offsetWidth - 8))}px`;
+  el.style.top = `${Math.max(8, Math.min(y, innerHeight - el.offsetHeight - 8))}px`;
+  // Submenus open to the left when there is no room on the right.
+  el.classList.toggle('is-flip', x + el.offsetWidth * 2 > innerWidth);
+  // Focus the menu itself: arrows then walk the items, and Space no longer reaches the row behind it.
+  el.focus({preventScroll: true});
+}
+function closeMenu() { const el = $('#ctx'); if (!el.hidden) { el.hidden = true; el.innerHTML = ''; } }
+function menuAction(d) {
+  closeMenu();
+  const id = d.id;
+  if (d.ctx === 'done') commit('tasks', id, {done: !state.tasks[id].done});
+  else if (d.ctx === 'edit') taskSheet({id});
+  else if (d.ctx === 'today') moveToToday([id]);
+  else if (d.ctx === 'backlog') { commit('tasks', id, {date: '', done: false}); toast('Tarefa movida para o Backlog.'); }
+  else if (d.ctx === 'section') commit('tasks', id, {section: d.section});
+  else if (d.ctx === 'delete') deleteTasks([id]);
+  else if (d.ctx === 'pay') commit('bills', id, {done: !state.bills[id].done});
+  else if (d.ctx === 'bill-edit') billSheet(id);
+  else if (d.ctx === 'bill-delete') deleteBillSheet(state.bills[id]);
+  else if (d.ctx === 'item-done') commit('shopping', id, {done: !state.shopping[id].done});
+  else if (d.ctx === 'item-edit') itemSheet(id);
+  else if (d.ctx === 'item-remove') { commit('shopping', id, {listed: false, done: false}); toast(`${state.shopping[id].text} tirado da lista.`); }
+}
+document.addEventListener('contextmenu', e => {
+  if (!desktop()) return;
+  const task = e.target.closest('[data-row]'), bill = e.target.closest('[data-bill-row]'), item = e.target.closest('[data-item-row]');
+  const html = task ? taskMenu(task.dataset.row) : bill ? billMenu(bill.dataset.billRow) : item ? itemMenu(item.dataset.itemRow) : '';
+  if (!html) return;
+  e.preventDefault();
+  if (task && task.matches('.n-row')) { cursor = task.dataset.row; $$('.n-row.is-cursor').forEach(r => r.classList.remove('is-cursor')); task.classList.add('is-cursor'); }
+  openMenu(e.clientX, e.clientY, html);
+});
+document.addEventListener('pointerdown', e => { if (!e.target.closest('#ctx')) closeMenu(); }, true);
+addEventListener('blur', closeMenu);
+addEventListener('resize', closeMenu);
+document.addEventListener('scroll', closeMenu, true);
+
+// ----- Seleção no Backlog, captura rápida, horários livres -----
+
+function setCursor(id, extend) {
+  cursor = id;
+  if (tab === 'backlog') {
+    if (!extend) selected = new Set([id]); else selected.add(id);
+    anchor = extend ? anchor || id : id;
+  }
+  render();
+  $(`.n-row[data-row="${CSS.escape(id)}"]`)?.scrollIntoView({block: 'nearest'});
+}
+document.addEventListener('click', e => {
+  const row = e.target.closest('[data-pick]');
+  if (!row || e.target.closest('button')) return;
+  const id = row.dataset.pick;
+  if (e.metaKey || e.ctrlKey) { selected.has(id) ? selected.delete(id) : selected.add(id); anchor = id; }
+  else if (e.shiftKey && anchor) {
+    const ids = $$('[data-pick]').map(r => r.dataset.pick), a = ids.indexOf(anchor), b = ids.indexOf(id);
+    selected = new Set(a < 0 ? [id] : ids.slice(Math.min(a, b), Math.max(a, b) + 1));
+  } else { selected = new Set([id]); anchor = id; }
+  cursor = id;
+  render();
+});
+document.addEventListener('dblclick', e => {
+  const row = e.target.closest('[data-pick]');
+  if (row && !e.target.closest('button')) { taskSheet({id: row.dataset.pick}); return; }
+  const col = e.target.closest('[data-slot-day]');
+  if (!col || e.target.closest('button')) return;
+  const date = col.dataset.slotDay;
+  if (date < today()) { toast('Escolha um dia a partir de hoje.'); return; }
+  const offset = e.clientY - col.getBoundingClientRect().top;
+  const start = Math.min(23 * 60 + 30, Number(col.dataset.first) + Math.floor(offset / Number(col.dataset.hour) * 2) * 30);
+  const time = `${String(Math.floor(start / 60)).padStart(2, '0')}:${String(start % 60).padStart(2, '0')}`;
+  taskSheet({when: date === today() ? 'today' : 'later', meeting: true, date, time});
+});
+
+document.addEventListener('submit', e => {
+  if (e.target.id !== 'quick-task') return;
+  e.preventDefault();
+  const input = e.target.elements.entry, parsed = parseQuickTask(input.value, sections());
+  if (!parsed.text) return;
+  const section = parsed.section || lastSection();
+  input.value = '';
+  commit('tasks', uid(), {text: parsed.text, section, time: parsed.time, meeting: false, repeat: '', date: today(), done: false});
+  drawQuickChips();
+});
+document.addEventListener('input', e => {
+  if (e.target.matches('#quick-task input')) drawQuickChips();
+  if (e.target.id === 'finder-q' && finder) { finder.q = e.target.value; finder.i = 0; drawFinder(); }
+});
+
+// Backlog rows are dragged with the mouse onto "Hoje" in the sidebar.
+function endDrag() {
+  if (!dragIds) return;
+  dragIds = null;
+  document.body.classList.remove('is-dragging-tasks');
+  $$('.is-over').forEach(el => el.classList.remove('is-over'));
+  render();
+}
+document.addEventListener('dragstart', e => {
+  const row = e.target.closest?.('[data-pick]');
+  if (!row) return;
+  const id = row.dataset.pick;
+  if (!selected.has(id)) { selected = new Set([id]); $$('.d-pick.is-selected').forEach(r => r.classList.remove('is-selected')); row.classList.add('is-selected'); }
+  dragIds = [...selected];
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', dragIds.map(i => state.tasks[i]?.text || '').join('\n'));
+  document.body.classList.add('is-dragging-tasks');
+});
+document.addEventListener('dragover', e => {
+  const target = e.target.closest?.('[data-drop-today]');
+  if (!target || !dragIds) return;
+  e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+  target.classList.add('is-over');
+});
+document.addEventListener('dragleave', e => {
+  const target = e.target.closest?.('[data-drop-today]');
+  if (target && !target.contains(e.relatedTarget)) target.classList.remove('is-over');
+});
+document.addEventListener('drop', e => {
+  const target = e.target.closest?.('[data-drop-today]');
+  if (!target || !dragIds) return;
+  e.preventDefault();
+  const ids = dragIds;
+  endDrag(); selected.clear();
+  moveToToday(ids);
+});
+document.addEventListener('dragend', endDrag);
+
+// ----- Atalhos -----
+
+document.addEventListener('keydown', e => {
+  if (!desktop()) return;
+  const mod = e.metaKey || e.ctrlKey, key = e.key;
+  // A sheet is a modal dialog; the search would open behind it.
+  if (mod && key.toLowerCase() === 'k' && !$('#sheet').open) { e.preventDefault(); finder ? closeFinder() : openFinder(); return; }
+  if (finder) {
+    if (key === 'Escape') { e.preventDefault(); closeFinder(); }
+    else if (key === 'ArrowDown' || key === 'ArrowUp') {
+      e.preventDefault();
+      const n = finder.items.length;
+      if (n) { finder.i = (finder.i + (key === 'ArrowDown' ? 1 : -1) + n) % n; drawFinder(); }
+    } else if (key === 'Enter') { e.preventDefault(); runFinder(finder.i); }
+    return;
+  }
+  if (!$('#ctx').hidden) {
+    const items = $$('#ctx > .d-mi'), i = items.indexOf(document.activeElement);
+    if (key === 'Escape') { e.preventDefault(); closeMenu(); }
+    else if ((key === ' ' || key === 'Enter') && !e.target.closest?.('#ctx .d-mi')) e.preventDefault();
+    else if (key === 'ArrowDown' || key === 'ArrowUp') {
+      e.preventDefault();
+      const down = key === 'ArrowDown', n = items.length;
+      items[i < 0 ? (down ? 0 : n - 1) : (i + (down ? 1 : -1) + n) % n]?.focus();
+    }
+    return;
+  }
+  if ($('#sheet').open) return;
+  if (mod && /^[1-9]$/.test(key)) { const target = mainTabs()[Number(key) - 1]; if (target) { e.preventDefault(); switchTab(target[0]); } return; }
+  if (mod && key === ',') { e.preventDefault(); switchTab('ajustes'); return; }
+  if (e.target.closest?.('input, textarea, select, [contenteditable], [data-drag]')) { if (key === 'Escape') e.target.blur?.(); return; }
+  if (navigation.current !== 'root') return;
+  if (!e.altKey && ((mod && key.toLowerCase() === 'n') || (!mod && key === 'n'))) { e.preventDefault(); newTask(); return; }
+  if (tab === 'backlog') {
+    if (mod && key === 'Enter' && selected.size) { e.preventDefault(); const ids = [...selected]; selected.clear(); moveToToday(ids); return; }
+    if (mod && key.toLowerCase() === 'a') { e.preventDefault(); selected = new Set(backlog().map(t => t.id)); render(); return; }
+    if (key === 'Escape' && selected.size) { selected.clear(); render(); return; }
+  }
+  if (mod || e.altKey) return;
+  // Space and Return on a focused button already click it.
+  if ((key === ' ' || key === 'Enter') && e.target.closest?.('button, a, label')) return;
+  if (['j', 'k', 'ArrowDown', 'ArrowUp'].includes(key) && (tab === 'hoje' || tab === 'backlog' || tab === 'reunioes')) {
+    const ids = $$('.page[data-name="root"] .n-row[data-row]').map(r => r.dataset.row);
+    if (!ids.length) return;
+    e.preventDefault();
+    const i = ids.indexOf(cursor), down = key === 'j' || key === 'ArrowDown';
+    document.activeElement?.blur?.();
+    setCursor(ids[i < 0 ? 0 : Math.max(0, Math.min(ids.length - 1, i + (down ? 1 : -1)))], e.shiftKey);
+    return;
+  }
+  const task = cursor && state.tasks[cursor] && !state.tasks[cursor].deleted && $(`.n-row[data-row="${CSS.escape(cursor)}"]`) ? state.tasks[cursor] : null;
+  if (!task) return;
+  if (key === ' ') { e.preventDefault(); if (tab === 'backlog') { selected.has(task.id) ? selected.delete(task.id) : selected.add(task.id); render(); } else commit('tasks', task.id, {done: !task.done}); }
+  else if (key === 'Enter') { e.preventDefault(); taskSheet({id: task.id}); }
+  else if (key === 'Backspace' || key === 'Delete') { e.preventDefault(); deleteTasks(tab === 'backlog' && selected.size ? [...selected] : [task.id]); selected.clear(); }
+});
+
+// The time and the "em N min" labels move with the clock.
+setInterval(() => { if (desktop() && (tab === 'hoje' || tab === 'reunioes') && !finder && $('#ctx').hidden && !dragIds && !document.activeElement?.closest?.('input')) render(); }, 60000);
 
 // ---------- Lifecycle ----------
 

@@ -274,3 +274,37 @@ export function carryOps(tasks, today) {
 export const itemKey = text => String(text).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 export const itemId = text => `i-${itemKey(text)}`.slice(0, 200);
 export const listed = state => Object.values(state.shopping || {}).filter(i => !i.deleted && i.listed !== false);
+
+// Quick add on the desktop: "Revisar PR 15h #trab" → text, section id and time.
+// A #tag that matches no section stays in the text.
+export function parseQuickTask(input, sections) {
+  let text = ` ${String(input).replace(/\s+/g, ' ').trim()} `, section = '', time = '';
+  const tag = text.match(/ #(\S+)/);
+  if (tag) {
+    const key = itemKey(tag[1]).replace(/ /g, '');
+    const found = key && sections.find(s => itemKey(s.name).replace(/ /g, '').startsWith(key));
+    if (found) { section = found.id; text = text.replace(tag[0], ' '); }
+  }
+  const at = text.match(/ (?:(?:às|as) )?([01]?\d|2[0-3])(?:h([0-5]\d)?|:([0-5]\d))(?= )/i);
+  if (at) { time = `${at[1].padStart(2, '0')}:${at[2] || at[3] || '00'}`; text = text.replace(at[0], ' '); }
+  return {text: text.replace(/\s+/g, ' ').trim(), section, time};
+}
+
+// Week view: meetings that overlap share the width side by side. Each item has
+// `start` in minutes; meetings have no end time, so each one takes `length`.
+export function meetingLanes(items, length = 30) {
+  const placed = [];
+  let cluster = [], ends = [], clusterEnd = -Infinity;
+  const close = () => { for (const item of cluster) item.lanes = ends.length; cluster = []; ends = []; };
+  for (const item of [...items].sort((a, b) => a.start - b.start)) {
+    if (item.start >= clusterEnd) close();
+    let lane = ends.findIndex(end => end <= item.start);
+    if (lane < 0) lane = ends.length;
+    ends[lane] = item.start + length;
+    clusterEnd = Math.max(clusterEnd, item.start + length);
+    const out = {...item, lane};
+    cluster.push(out); placed.push(out);
+  }
+  close();
+  return placed;
+}

@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {initialState, apply, rollover, migrate, repeatsOn, lastPending, pendingOn, carryOps, scheduledTasks, sortedSections, itemKey, itemId, listed, tabPrefs, shiftMonth, scheduledBills, repeatingBills} from '../public/model.js';
+import {initialState, apply, rollover, migrate, repeatsOn, lastPending, pendingOn, carryOps, scheduledTasks, sortedSections, itemKey, itemId, listed, tabPrefs, shiftMonth, scheduledBills, repeatingBills, parseQuickTask, meetingLanes} from '../public/model.js';
 
 const run = (s, ops) => ops.forEach(op => apply(s, op));
 
@@ -194,4 +194,22 @@ test('agendadas projeta os próximos meses pelo ritmo de cada conta', () => {
   assert.deepEqual(m.map(x => x.total), [100, 700, 100, 700]);
   assert.equal(shiftMonth('2026-11', 14), '2028-01');
   assert.equal(shiftMonth('2026-01', -1), '2025-12');
+});
+
+test('captura rápida entende seção e horário e deixa o resto como texto', () => {
+  const secs = [{id: 'a', name: 'Acme'}, {id: 'b', name: 'Pessoal'}, {id: 'c', name: 'Globex Ads'}];
+  assert.deepEqual(parseQuickTask('Revisar PR 15h #acm', secs), {text: 'Revisar PR', section: 'a', time: '15:00'});
+  assert.deepEqual(parseQuickTask('#pess Dentista às 9h30', secs), {text: 'Dentista', section: 'b', time: '09:30'});
+  assert.deepEqual(parseQuickTask('Call 14:05 #globexads', secs), {text: 'Call', section: 'c', time: '14:05'});
+  assert.deepEqual(parseQuickTask('Ler #livro', secs), {text: 'Ler #livro', section: '', time: ''});
+  assert.deepEqual(parseQuickTask('Comprar 2h de crédito? não: 25h', secs), {text: 'Comprar de crédito? não: 25h', section: '', time: '02:00'});
+  assert.deepEqual(parseQuickTask('Versão 1.15h', secs), {text: 'Versão 1.15h', section: '', time: ''});
+});
+
+test('reuniões que se sobrepõem dividem a coluna do dia', () => {
+  const out = meetingLanes([{id: 'c', start: 16 * 60}, {id: 'a', start: 11 * 60}, {id: 'b', start: 11 * 60}, {id: 'd', start: 16 * 60 + 30}]);
+  const by = Object.fromEntries(out.map(x => [x.id, [x.lane, x.lanes]]));
+  assert.deepEqual(by, {a: [0, 2], b: [1, 2], c: [0, 1], d: [0, 1]});
+  const chain = Object.fromEntries(meetingLanes([{id: 'x', start: 0}, {id: 'y', start: 20}, {id: 'z', start: 40}]).map(x => [x.id, [x.lane, x.lanes]]));
+  assert.deepEqual(chain, {x: [0, 2], y: [1, 2], z: [0, 2]});
 });
