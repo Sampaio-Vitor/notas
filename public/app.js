@@ -173,6 +173,29 @@ const scheduled = () => scheduledTasks(state, today());
 const dayShort = date => `${WEEK[weekday(date)].slice(0, 3).toLowerCase()}, ${Number(date.slice(8, 10))} de ${MONTHS[Number(date.slice(5, 7)) - 1].slice(0, 3)}`;
 const byTime = list => [...list].sort((a, b) => (a.time ? 0 : 1) - (b.time ? 0 : 1) || (a.time || '').localeCompare(b.time || ''));
 const doneCount = list => list.filter(t => t.done).length;
+// Done tasks sink to the bottom of their group. A task just toggled keeps its old place
+// for a beat, so the check registers before the row moves.
+const settling = new Set();
+let settleTimer;
+const sunk = t => settling.has(t.id) ? !t.done : !!t.done;
+const byDone = list => byTime(list).sort((a, b) => sunk(a) - sunk(b));
+function toggleTask(id) {
+  settling.add(id);
+  commit('tasks', id, {done: !state.tasks[id].done});
+  clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => { settling.clear(); flip(render); }, 450);
+}
+// Re-renders, then slides each task row from where it was to where it landed.
+function flip(update) {
+  const rows = () => $$('.page[data-name="root"] [data-row]');
+  const before = new Map(rows().map(r => [r.dataset.row, r.getBoundingClientRect().top]));
+  update();
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  for (const r of rows()) {
+    const dy = (before.get(r.dataset.row) ?? NaN) - r.getBoundingClientRect().top;
+    if (dy) r.animate([{transform: `translateY(${dy}px)`, zIndex: 1}, {transform: 'none', zIndex: 1}], {duration: 420, easing: 'cubic-bezier(.2, .8, .2, 1)'});
+  }
+}
 function lastSection() {
   const id = localStorage.getItem('notas-section');
   return state.sections[id] && !state.sections[id].deleted ? id : sections()[0]?.id;
@@ -223,21 +246,21 @@ function taskRow(t, mode = 'edit') {
     const on = selected.has(t.id);
     return `<div class="n-row ${on ? 'is-selected' : ''}"><button class="n-check n-square" data-select="${t.id}" aria-pressed="${on}" aria-label="Selecionar ${esc(t.text)}">${ICONS.check}</button><button class="n-text" data-select="${t.id}">${esc(t.text)}</button></div>`;
   }
-  const row = `<div class="n-row ${t.done ? 'is-done' : ''} ${cursor === t.id ? 'is-cursor' : ''}" data-row="${t.id}"><button class="n-check" data-toggle="${t.id}" data-collection="tasks" aria-pressed="${!!t.done}" aria-label="${t.done ? 'Desmarcar' : 'Concluir'} ${esc(t.text)}">${ICONS.check}</button><button class="n-text" data-edit-task="${t.id}">${esc(t.text)}</button>${meta}</div>`;
+  const row = `<div class="n-row ${t.done ? 'is-done' : ''} ${t.done && settling.has(t.id) ? 'is-settling' : ''} ${cursor === t.id ? 'is-cursor' : ''}" data-row="${t.id}"><button class="n-check" data-toggle="${t.id}" data-collection="tasks" aria-pressed="${!!t.done}" aria-label="${t.done ? 'Desmarcar' : 'Concluir'} ${esc(t.text)}">${ICONS.check}</button><button class="n-text" data-edit-task="${t.id}">${esc(t.text)}</button>${meta}</div>`;
   if (mode === 'swipe') return `<div class="n-swipe" data-swipe="${t.id}"><span class="n-swipe-action" aria-hidden="true">Hoje</span>${row}</div>`;
   return row;
 }
 
 function sectionGroups(tasks, mode, count) {
   return sections().map(s => {
-    const list = byTime(tasks.filter(t => t.section === s.id));
+    const list = byDone(tasks.filter(t => t.section === s.id));
     if (!list.length) return '';
     return `<section><div class="n-group-h"><h2>${dot(s.id)}${esc(s.name)}</h2><span>${count(list)}</span></div><div class="n-list">${list.map(t => taskRow(t, mode)).join('')}</div></section>`;
   }).join('') + orphanGroup(tasks, mode, count);
 }
 // Tasks whose section no longer exists still need to be reachable.
 function orphanGroup(tasks, mode, count) {
-  const list = byTime(tasks.filter(t => !state.sections[t.section] || state.sections[t.section].deleted));
+  const list = byDone(tasks.filter(t => !state.sections[t.section] || state.sections[t.section].deleted));
   return list.length ? `<section><div class="n-group-h"><h2>Sem seção</h2><span>${count(list)}</span></div><div class="n-list">${list.map(t => taskRow(t, mode)).join('')}</div></section>` : '';
 }
 
@@ -269,7 +292,7 @@ function viewReunioes() {
   const later = once.filter(t => t.date > horizon);
   const laterGroup = later.length ? group('Mais adiante', later.map(t => row(t, t.date)).join(''), later.length) : '';
   const today_ = now.length
-    ? `<section><div class="n-group-h"><h2>Hoje</h2><span>${doneCount(now)} de ${now.length}</span></div><div class="n-list">${byTime(now).map(t => taskRow(t)).join('')}</div></section>`
+    ? `<section><div class="n-group-h"><h2>Hoje</h2><span>${doneCount(now)} de ${now.length}</span></div><div class="n-list">${byDone(now).map(t => taskRow(t)).join('')}</div></section>`
     : '<div class="n-empty"><p>Nenhuma reunião hoje.</p></div>';
   return `${statusHtml()}<div class="n-top"><span></span></div><h1 class="n-title">Reuniões</h1><p class="n-sub">${longDate(today())}</p>${today_}${upcoming}${laterGroup}`;
 }
@@ -324,11 +347,22 @@ function agendadasBody() {
   return `<p class="n-sub">Projeção a partir das contas que se repetem.</p><div class="n-list n-spaced">${months.map(row).join('')}</div><p class="n-note">Toque num mês para ver as contas e os valores.</p>`;
 }
 
+// Bills of a month. In a future month, also what the repeating ones will create there:
+// a projection only, so it cannot be paid or edited until the month arrives.
+function monthBills(month) {
+  const real = live(state, 'bills').filter(b => b.month === month);
+  if (month <= today().slice(0, 7)) return {real, projected: []};
+  const ids = new Set(real.map(b => b.id));
+  return {real, projected: scheduledBills(state, month, 1)[0].items.filter(i => !ids.has(i.id))};
+}
+const plannedMeta = b => `${b.due ? `Dia ${b.due}` : 'Sem dia'}${b.every > 1 ? ` · <i class="n-every">${everyLabel(b.every)}</i>` : ''}${b.calcMode === 'occurrence' ? ` · ${billCalcLabel(b)}` : ''}`;
+const noBills = () => `<div class="n-empty"><p>Nenhuma conta em ${MONTHS[Number(billMonth.slice(5, 7)) - 1]}.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-bill>Adicionar conta</button></div></div>`;
+
 function viewContas() {
   if (billsView === 'todas') return viewAllBills();
   if (billsView === 'agendadas') return viewAgendadas();
   const current = today().slice(0, 7), prev = addMonths(billMonth, -1), next = addMonths(billMonth, 1);
-  const bills = live(state, 'bills').filter(b => b.month === billMonth);
+  const {real: bills, projected} = monthBills(billMonth);
   const sortDue = list => [...list].sort((a, b) => (a.due || 99) - (b.due || 99) || a.text.localeCompare(b.text));
   const unpaid = sortDue(bills.filter(b => !b.done)), paid = sortDue(bills.filter(b => b.done));
   const left = unpaid.reduce((n, b) => n + (b.amount || 0), 0);
@@ -342,9 +376,15 @@ function viewContas() {
     return `<span class="n-meta ${late ? 'is-late' : ''}">${due}${due && every > 1 ? ' · ' : ''}${every > 1 ? `<i class="n-every">${everyLabel(every)}</i>` : ''}</span>`;
   };
   const row = b => `<div class="n-row n-bill-row ${b.done ? 'is-done' : ''}"><button class="n-check" data-toggle="${esc(b.id)}" data-collection="bills" aria-pressed="${!!b.done}" aria-label="${b.done ? 'Desmarcar' : 'Marcar como paga'} ${esc(b.text)}">${ICONS.check}</button><button class="n-text n-two" data-edit-bill="${esc(b.id)}"><span>${esc(b.text)}</span>${dueMeta(b)}${b.calcMode === 'occurrence' ? `<span class="n-meta">${billCalcLabel(b)}</span>` : ''}</button><span class="n-amount">${money(b.amount)}</span>${billActions(b)}</div>`;
-  const top = `<div class="n-top"><button class="n-link" data-month="${prev}">‹ ${monthName(prev)}</button><span class="n-top-end">${billMonth < current ? `<button class="n-link" data-month="${next}">${monthName(next)} ›</button>` : ''}<button class="n-icon" data-new-bill aria-label="Adicionar conta">${ICONS.plus}</button></span></div>`;
-  if (!bills.length) {
-    return `${statusHtml()}${top}<h1 class="n-title">${monthName(billMonth)}</h1>${billsSegment()}<div class="n-empty"><p>Nenhuma conta em ${MONTHS[Number(billMonth.slice(5, 7)) - 1]}.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-bill>Adicionar conta</button></div></div>`;
+  const top = `<div class="n-top"><button class="n-link" data-month="${prev}">‹ ${monthName(prev)}</button><span class="n-top-end"><button class="n-link" data-month="${next}">${monthName(next)} ›</button><button class="n-icon" data-new-bill aria-label="Adicionar conta">${ICONS.plus}</button></span></div>`;
+  if (!bills.length && !projected.length) return `${statusHtml()}${top}<h1 class="n-title">${monthName(billMonth)}</h1>${billsSegment()}${noBills()}`;
+  if (billMonth > current) {
+    const planned = b => `<div class="n-row n-bill-row n-plain"><span class="n-text n-two"><span>${esc(b.text)}</span><span class="n-meta">${plannedMeta(b)}</span></span><span class="n-amount">${money(b.amount)}</span></div>`;
+    return `${statusHtml()}${top}<h1 class="n-title">${monthName(billMonth)}</h1>${billsSegment()}
+    <div class="n-total"><span>Previsto</span><strong>${money(left + projected.reduce((n, b) => n + b.amount, 0))}</strong></div>
+    ${unpaid.length ? `<div class="n-group-h"><h2>A pagar</h2></div><div class="n-list">${unpaid.map(row).join('')}</div>` : ''}
+    ${projected.length ? `<div class="n-group-h"><h2>Previstas</h2></div><div class="n-list">${projected.map(planned).join('')}</div><p class="n-note">Contas que se repetem entram aqui quando ${MONTHS[Number(billMonth.slice(5, 7)) - 1]} chegar.</p>` : ''}
+    ${paid.length ? `<div class="n-group-h"><h2>Pagas</h2></div><div class="n-list">${paid.map(row).join('')}</div>` : ''}`;
   }
   return `${statusHtml()}${top}<h1 class="n-title">${monthName(billMonth)}</h1>${billsSegment()}
     <div class="n-total"><span>${left ? 'Falta pagar' : 'Tudo pago'}</span><strong>${money(left)}</strong></div>
@@ -1030,7 +1070,7 @@ document.addEventListener('click', e => {
   else if ('clearSelection' in d) { selected.clear(); render(); }
   else if ('close' in d) closeSheet();
   else if ('back' in d) navigation.back();
-  else if (d.toggle) { const c = d.collection; commit(c, d.toggle, {done: !state[c][d.toggle].done}); }
+  else if (d.toggle) { const c = d.collection; c === 'tasks' ? toggleTask(d.toggle) : commit(c, d.toggle, {done: !state[c][d.toggle].done}); }
   else if (d.editTask) taskSheet({id: d.editTask});
   else if ('newTask' in d) taskSheet({when: tab === 'backlog' ? 'backlog' : 'today'});
   else if ('newMeeting' in d) taskSheet({when: 'today', meeting: true});
@@ -1301,7 +1341,7 @@ function backlogActions() {
 
 function deskContas() {
   const current = today().slice(0, 7), prev = addMonths(billMonth, -1), next = addMonths(billMonth, 1);
-  const pager = billsView === 'mes' ? `<div class="d-pager"><button class="d-tool" data-month="${prev}" aria-label="${monthName(prev)}">‹</button>${billMonth === current ? '' : `<button class="d-tool" data-month="${current}">Este mês</button>`}<button class="d-tool" data-month="${next}" aria-label="${monthName(next)}" ${billMonth < current ? '' : 'disabled'}>›</button></div>` : '';
+  const pager = billsView === 'mes' ? `<div class="d-pager"><button class="d-tool" data-month="${prev}" aria-label="${monthName(prev)}">‹</button>${billMonth === current ? '' : `<button class="d-tool" data-month="${current}">Este mês</button>`}<button class="d-tool" data-month="${next}" aria-label="${monthName(next)}">›</button></div>` : '';
   const title = billsView === 'mes' ? monthName(billMonth) : 'Contas';
   const sub = {mes: 'Contas do mês', agendadas: 'Próximos 12 meses', todas: 'Todas as contas cadastradas'}[billsView];
   const body = billsView === 'todas' ? allBillsBody() : billsView === 'agendadas' ? agendadasBody() : billTable();
@@ -1310,8 +1350,8 @@ function deskContas() {
 
 function billTable() {
   const current = today().slice(0, 7), day = Number(today().slice(8, 10));
-  const bills = live(state, 'bills').filter(b => b.month === billMonth);
-  if (!bills.length) return `<div class="n-empty"><p>Nenhuma conta em ${MONTHS[Number(billMonth.slice(5, 7)) - 1]}.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-bill>Adicionar conta</button></div></div>`;
+  const {real: bills, projected} = monthBills(billMonth);
+  if (!bills.length && !projected.length) return noBills();
   const sortDue = list => [...list].sort((a, b) => (a.due || 99) - (b.due || 99) || a.text.localeCompare(b.text));
   const unpaid = sortDue(bills.filter(b => !b.done)), paid = sortDue(bills.filter(b => b.done));
   const sum = list => list.reduce((n, b) => n + (b.amount || 0), 0), left = sum(unpaid), total = sum(bills);
@@ -1319,7 +1359,8 @@ function billTable() {
   const overdue = unpaid.filter(late), next = billMonth === current ? unpaid.find(b => b.due && !late(b)) : null;
   const lastDay = new Date(Number(billMonth.slice(0, 4)), Number(billMonth.slice(5, 7)), 0).getDate();
   const nextDay = next && `${billMonth}-${String(Math.min(next.due, lastDay)).padStart(2, '0')}`;
-  const stats = `<div class="d-stats">
+  const planned = sum(projected), future = billMonth > current;
+  const stats = future ? `<div class="d-stats"><div class="d-stat is-big"><span>Previsto no mês</span><strong>${money(left + planned)}</strong><small>${plural(unpaid.length + projected.length, 'conta', 'contas')} a pagar</small></div></div>` : `<div class="d-stats">
     <div class="d-stat is-big"><span>${left ? 'Falta pagar' : 'Tudo pago'}</span><strong>${money(left)}</strong><div class="n-bar" role="progressbar" aria-valuemin="0" aria-valuemax="${bills.length}" aria-valuenow="${paid.length}" aria-label="Contas pagas"><span style="width:${paid.length / bills.length * 100}%"></span></div><small>${paid.length} de ${bills.length} pagas · ${money(total)} no mês</small></div>
     <div class="d-stat ${overdue.length ? 'is-late' : ''}"><span>Atrasadas</span><strong>${overdue.length ? esc(overdue.map(b => b.text).join(', ')) : 'Nenhuma'}</strong><small>${overdue.length ? money(sum(overdue)) : 'Tudo em dia'}</small></div>
     ${billMonth === current ? `<div class="d-stat"><span>Próximo vencimento</span><strong>${next ? esc(next.text) : 'Nenhum'}</strong><small>${next ? `${WEEK[weekday(nextDay)].toLowerCase()}, dia ${next.due} · ${money(next.amount)}` : 'Nada mais a vencer neste mês'}</small></div>` : ''}
@@ -1331,8 +1372,9 @@ function billTable() {
     <td>${b.repeat !== false ? cap(everyLabel(billEvery(b))) : 'Não repete'}</td>
     <td class="d-num">${money(b.amount)}</td>
     <td class="d-c-more">${billActions(b)}</td></tr>`;
+  const plannedRow = b => `<tr class="is-planned"><td class="d-c-check"></td><td><span class="d-c-name">${esc(b.text)}${b.calcMode === 'occurrence' ? `<small>${billCalcLabel(b)}</small>` : ''}</span></td><td>${b.due ? `Dia ${b.due}` : 'Sem dia'}</td><td>${cap(everyLabel(b.every))}</td><td class="d-num">${money(b.amount)}</td><td></td></tr>`;
   return `${stats}<table class="d-table"><thead><tr><th><span class="n-sr">Paga</span></th><th>Conta</th><th>Vencimento</th><th>Repetição</th><th class="d-num">Valor</th><th><span class="n-sr">Ações</span></th></tr></thead>
-    <tbody>${unpaid.map(row).join('')}${paid.length ? `<tr class="d-t-group"><td colspan="6">Pagas</td></tr>${paid.map(row).join('')}` : ''}</tbody></table>`;
+    <tbody>${unpaid.map(row).join('')}${projected.length ? `<tr class="d-t-group"><td colspan="6">Previstas · entram quando o mês chegar</td></tr>${projected.map(plannedRow).join('')}` : ''}${paid.length ? `<tr class="d-t-group"><td colspan="6">Pagas</td></tr>${paid.map(row).join('')}` : ''}</tbody></table>`;
 }
 
 function deskCompras() {
@@ -1455,7 +1497,7 @@ function closeMenu() { const el = $('#ctx'); if (!el.hidden) { el.hidden = true;
 function menuAction(d) {
   closeMenu();
   const id = d.id;
-  if (d.ctx === 'done') commit('tasks', id, {done: !state.tasks[id].done});
+  if (d.ctx === 'done') toggleTask(id);
   else if (d.ctx === 'edit') taskSheet({id});
   else if (d.ctx === 'today') moveToToday([id]);
   else if (d.ctx === 'backlog') { commit('tasks', id, {date: '', done: false}); toast('Tarefa movida para o Backlog.'); }
@@ -1623,7 +1665,7 @@ document.addEventListener('keydown', e => {
   }
   const task = cursor && state.tasks[cursor] && !state.tasks[cursor].deleted && $(`.n-row[data-row="${CSS.escape(cursor)}"]`) ? state.tasks[cursor] : null;
   if (!task) return;
-  if (key === ' ') { e.preventDefault(); if (tab === 'backlog') { selected.has(task.id) ? selected.delete(task.id) : selected.add(task.id); render(); } else commit('tasks', task.id, {done: !task.done}); }
+  if (key === ' ') { e.preventDefault(); if (tab === 'backlog') { selected.has(task.id) ? selected.delete(task.id) : selected.add(task.id); render(); } else toggleTask(task.id); }
   else if (key === 'Enter') { e.preventDefault(); taskSheet({id: task.id}); }
   else if (key === 'Backspace' || key === 'Delete') { e.preventDefault(); deleteTasks(tab === 'backlog' && selected.size ? [...selected] : [task.id]); selected.clear(); }
 });
