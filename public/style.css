@@ -48,7 +48,10 @@ body[data-float="yes"] .page[data-name="root"] .n-screen { padding-bottom: calc(
   background: var(--group); color: var(--yellow); display: grid; place-items: center; flex: none; cursor: pointer;
 }
 .n-icon svg { width: 19px; height: 19px; }
-.n-hidden-input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
+/* iOS keeps a date input as wide as its text, past the 36px icon; clip it, or picking a
+   date scrolls the page sideways to show it. */
+.n-icon:has(.n-hidden-input) { overflow: hidden; }
+.n-hidden-input { position: absolute; inset: 0; opacity: 0; width: 100%; min-width: 0; height: 100%; -webkit-appearance: none; appearance: none; cursor: pointer; }
 
 .n-title { font: 700 34px/1.1 var(--round); letter-spacing: -.01em; margin: 2px 0 0; }
 .n-sub { color: var(--secondary); font-size: 15px; margin: 6px 0 0; display: flex; justify-content: space-between; gap: 12px; }

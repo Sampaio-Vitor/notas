@@ -515,7 +515,12 @@ function pageHistory() {
         <button class="n-week-nav" data-day="${nextWeek}" aria-label="Próxima semana">›</button>
       </div>
       ${sectionGroups(tasks, 'read', list => ahead ? list.length : `${doneCount(list)} de ${list.length}`)}`,
-    action: (() => { const n = date < today() ? pendingOn(state, date).length : 0; return n ? `<button class="n-btn n-yellow n-wide" data-carry-day>${n === 1 ? 'Trazer 1 pendente para hoje' : `Trazer ${n} pendentes para hoje`}</button>` : ''; })(),
+    action: (() => {
+      // Today and later days take new tasks and meetings; earlier days only hand back what was left.
+      if (date >= today()) return `<button class="n-quick" data-new-on-day>${ICONS.plus}<span>Nova tarefa</span></button>`;
+      const n = pendingOn(state, date).length;
+      return n ? `<button class="n-btn n-yellow n-wide" data-carry-day>${n === 1 ? 'Trazer 1 pendente para hoje' : `Trazer ${n} pendentes para hoje`}</button>` : '';
+    })(),
   };
 }
 
@@ -1145,6 +1150,7 @@ document.addEventListener('click', e => {
   else if ('ignoreLast' in d) { const p = lastPending(state, today()); if (p) commit('days', p.date, {date: p.date, reviewed: true}); }
   else if ('openHistory' in d) { historyDate = defaultHistoryDate(); navigation.push('history'); }
   else if (d.day) { historyDate = d.day; render(); }
+  else if ('newOnDay' in d) taskSheet(historyDate > today() ? {when: 'later', date: historyDate} : {when: 'today'});
   else if ('carryDay' in d) { carry(pendingOn(state, historyDate), historyDate); navigation.back(); }
   else if (d.push) navigation.push(d.push);
   else if ('export' in d) exportBackup();
@@ -1161,7 +1167,7 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('change', e => {
   if (e.target.matches('[data-tab-pref]')) commit('prefs', 'tabs', {[e.target.dataset.tabPref]: e.target.checked});
-  if (e.target.matches('[data-pick-day]') && e.target.value) { historyDate = e.target.value; render(); }
+  if (e.target.matches('[data-pick-day]') && e.target.value) { const content = e.target.closest('.page-content'); historyDate = e.target.value; render(); if (content) content.scrollLeft = 0; }
 });
 $('#sheet').addEventListener('click', e => {
   // A click on the backdrop lands on the dialog itself, outside its box.
