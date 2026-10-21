@@ -221,7 +221,8 @@ export function rollover(state, date) {
   const add = (collection, id, patch) => ops.push({collection, id, patch});
   if (!state.days[date]) {
     add('days', date, {date});
-    for (const r of live(state, 'repeats').filter(r => repeatsOn(r, date))) {
+    // An occurrence already stored (checked or edited ahead of time) is left as it is.
+    for (const r of live(state, 'repeats').filter(r => repeatsOn(r, date) && !state.tasks[occurrenceId(r.id, date)])) {
       add('tasks', occurrenceId(r.id, date), {text: r.text, section: r.section, time: r.time || '', date, done: false, repeat: r.id, ...(r.time ? {end: r.end || ''} : {}), ...(r.meeting ? {meeting: true} : {})});
     }
   }

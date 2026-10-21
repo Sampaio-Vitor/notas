@@ -173,6 +173,8 @@ const dayTasks = date => {
   if (state.days[date]) return stored;
   return [...stored, ...live(state, 'repeats').filter(r => repeatsOn(r, date) && !state.tasks[occurrenceId(r.id, date)]).map(r => ({id: occurrenceId(r.id, date), text: r.text, section: r.section, time: r.time || '', date, done: false, repeat: r.id, ...(r.time ? {end: r.end || ''} : {}), ...(r.meeting ? {meeting: true} : {})}))];
 };
+// A repeat's occurrence on a day not reached yet exists only on screen; touching it stores it.
+const projected = id => !state.tasks[id] && historyDate ? dayTasks(historyDate).find(t => t.id === id) : null;
 // With the Agenda tab on, meetings live there and leave Hoje. Other tasks with a
 // time show in both.
 const meetingsApart = () => tabPrefs(state).reunioes;
@@ -514,7 +516,7 @@ function pageHistory() {
         ${week.map(d => `<button class="n-day ${d === date ? 'is-selected' : ''} ${d === today() ? 'is-today' : ''}" data-day="${d}" aria-label="${esc(longDate(d))}"><small>${WEEK_INITIAL[weekday(d)]}</small><b>${Number(d.slice(8, 10))}</b><i class="${dot(d)}"></i></button>`).join('')}
         <button class="n-week-nav" data-day="${nextWeek}" aria-label="Próxima semana">›</button>
       </div>
-      ${sectionGroups(tasks, 'read', list => ahead ? list.length : `${doneCount(list)} de ${list.length}`)}`,
+      ${sectionGroups(tasks, date >= today() ? 'edit' : 'read', list => ahead ? list.length : `${doneCount(list)} de ${list.length}`)}`,
     action: (() => {
       // Today and later days take new tasks and meetings; earlier days only hand back what was left.
       if (date >= today()) return `<button class="n-quick" data-new-on-day>${ICONS.plus}<span>Nova tarefa</span></button>`;
@@ -1129,7 +1131,9 @@ document.addEventListener('click', e => {
   else if ('clearSelection' in d) { selected.clear(); render(); }
   else if ('close' in d) closeSheet();
   else if ('back' in d) navigation.back();
+  else if (d.toggle && d.collection === 'tasks' && projected(d.toggle)) { const {id, ...fields} = projected(d.toggle); commit('tasks', id, {...fields, done: true}); }
   else if (d.toggle) { const c = d.collection; c === 'tasks' ? toggleTask(d.toggle) : commit(c, d.toggle, {done: !state[c][d.toggle].done}); }
+  else if (d.editTask && projected(d.editTask)) { const {id, ...fields} = projected(d.editTask); commit('tasks', id, fields).then(() => taskSheet({id})); }
   else if (d.editTask) taskSheet({id: d.editTask});
   else if ('newTask' in d) taskSheet({when: tab === 'backlog' ? 'backlog' : 'today'});
   else if ('newMeeting' in d) taskSheet({when: 'today', meeting: true});

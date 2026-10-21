@@ -17,6 +17,15 @@ test('repetição gera a tarefa uma vez, só nos dias escolhidos', () => {
   assert.equal(s.tasks['r-r-2026-10-18'], undefined);
 });
 
+test('ocorrência marcada antes do dia chegar não é refeita pela virada', () => {
+  const s = initialState();
+  s.repeats.r = {id: 'r', text: 'Daily', section: 's1', time: '09:30', days: '12345', monthDay: 0};
+  run(s, [{collection: 'tasks', id: 'r-r-2026-10-20', patch: {text: 'Daily movida', section: 's1', time: '10:00', date: '2026-10-20', done: true, repeat: 'r'}}]);
+  run(s, rollover(s, '2026-10-20'));
+  assert.equal(s.tasks['r-r-2026-10-20'].done, true);
+  assert.equal(s.tasks['r-r-2026-10-20'].time, '10:00');
+});
+
 test('repetição mensal usa o último dia quando o mês é mais curto', () => {
   const r = {monthDay: 31, days: ''};
   assert.ok(repeatsOn(r, '2026-02-28'));
