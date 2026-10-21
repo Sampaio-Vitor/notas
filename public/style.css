@@ -168,6 +168,7 @@ body[data-float="yes"] .page[data-name="root"] .n-screen { padding-bottom: calc(
 .n-day { display: grid; justify-items: center; gap: 3px; padding: 4px 0; }
 .n-day small { font-size: 12px; color: var(--secondary); }
 .n-day b { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; font-weight: 500; font-size: 16px; font-variant-numeric: tabular-nums; }
+.n-day.is-today b { color: var(--yellow); font-weight: 700; }
 .n-day.is-selected b { background: var(--yellow); color: #000; font-weight: 700; }
 .n-day:disabled b { color: #48484a; }
 .n-day i { width: 5px; height: 5px; border-radius: 50%; background: #5a5a5e; }

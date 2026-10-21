@@ -166,6 +166,12 @@ async function sync() {
 const sections = () => sortedSections(state);
 const sectionName = id => state.sections[id]?.name || 'Sem seção';
 const tasksOn = date => live(state, 'tasks').filter(t => t.date === date);
+// A day not opened yet also shows what its repeats will create there.
+const dayTasks = date => {
+  const stored = tasksOn(date);
+  if (state.days[date]) return stored;
+  return [...stored, ...live(state, 'repeats').filter(r => repeatsOn(r, date) && !state.tasks[occurrenceId(r.id, date)]).map(r => ({id: occurrenceId(r.id, date), text: r.text, section: r.section, time: r.time || '', date, done: false, repeat: r.id, ...(r.meeting ? {meeting: true, end: r.end || ''} : {})}))];
+};
 // With the Reuniões tab on, meetings live there and leave Hoje.
 const meetingsApart = () => tabPrefs(state).reunioes;
 const todayTasks = () => tasksOn(today()).filter(t => !(meetingsApart() && t.meeting));
@@ -279,7 +285,7 @@ function viewHoje() {
     ? sectionGroups(tasks, 'edit', list => `${doneCount(list)} de ${list.length}`)
     : `<div class="n-empty"><p>Nada para hoje.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-task>Nova tarefa</button>${waiting && tabPrefs(state).backlog ? `<button class="n-btn n-gray" data-tab="backlog">Ver backlog (${waiting})</button>` : ''}</div></div>`;
   const avatar = me && people.length > 1 ? `<button class="n-avatar" data-tab="ajustes" style="background:${me.color}" aria-label="Conta de ${esc(me.name)}. Abrir Ajustes">${esc(me.name[0])}</button>` : '<span></span>';
-  return `${statusHtml()}<div class="n-top">${avatar}<button class="n-icon" data-open-history aria-label="Dias anteriores">${ICONS.cal}</button></div>
+  return `${statusHtml()}<div class="n-top">${avatar}<button class="n-icon" data-open-history aria-label="Calendário">${ICONS.cal}</button></div>
     <h1 class="n-title">Hoje</h1><p class="n-sub">${longDate(today())}${tasks.length ? `<span class="n-sub-count">${doneCount(tasks)} de ${tasks.length} feitas</span>` : ''}</p>${banner}${body}`;
 }
 
@@ -491,22 +497,22 @@ function defaultHistoryDate() {
 }
 
 function pageHistory() {
-  const date = historyDate, tasks = tasksOn(date);
+  const date = historyDate, tasks = dayTasks(date), ahead = date > today();
   const monday = addDays(date, -((weekday(date) + 6) % 7));
   const week = Array.from({length: 7}, (_, i) => addDays(monday, i));
-  const dot = d => { const list = tasksOn(d); return !list.length || d >= today() ? 'is-none' : list.every(t => t.done) ? 'is-all' : ''; };
+  const dot = d => { const list = dayTasks(d); return !list.length ? 'is-none' : list.every(t => t.done) ? 'is-all' : ''; };
   const sameMonth = date.slice(0, 7) === today().slice(0, 7);
   const title = `${WEEK[weekday(date)]}, ${Number(date.slice(8, 10))}${sameMonth ? '' : ` de ${MONTHS[Number(date.slice(5, 7)) - 1]}`}`;
   const nextWeek = addDays(monday, 7);
   return {
-    html: `<div class="n-top"><button class="n-link" data-back>‹ Hoje</button><label class="n-icon" aria-label="Escolher dia">${ICONS.cal}<input type="date" class="n-hidden-input" data-pick-day max="${addDays(today(), -1)}" value="${date}"></label></div>
-      <h1 class="n-title">${title}</h1><p class="n-sub">${tasks.length ? `${doneCount(tasks)} de ${tasks.length} feitas` : 'Nenhuma tarefa neste dia'}</p>
+    html: `<div class="n-top"><button class="n-link" data-back>‹ Hoje</button><label class="n-icon" aria-label="Escolher dia">${ICONS.cal}<input type="date" class="n-hidden-input" data-pick-day value="${date}"></label></div>
+      <h1 class="n-title">${title}</h1><p class="n-sub">${!tasks.length ? 'Nenhuma tarefa neste dia' : ahead ? plural(tasks.length, 'tarefa prevista', 'tarefas previstas') : `${doneCount(tasks)} de ${tasks.length} feitas`}</p>
       <div class="n-week">
         <button class="n-week-nav" data-day="${addDays(monday, -7)}" aria-label="Semana anterior">‹</button>
-        ${week.map(d => `<button class="n-day ${d === date ? 'is-selected' : ''}" data-day="${d}" ${d >= today() ? 'disabled' : ''} aria-label="${esc(longDate(d))}"><small>${WEEK_INITIAL[weekday(d)]}</small><b>${Number(d.slice(8, 10))}</b><i class="${dot(d)}"></i></button>`).join('')}
-        <button class="n-week-nav" data-day="${nextWeek}" ${nextWeek >= today() ? 'disabled' : ''} aria-label="Próxima semana">›</button>
+        ${week.map(d => `<button class="n-day ${d === date ? 'is-selected' : ''} ${d === today() ? 'is-today' : ''}" data-day="${d}" aria-label="${esc(longDate(d))}"><small>${WEEK_INITIAL[weekday(d)]}</small><b>${Number(d.slice(8, 10))}</b><i class="${dot(d)}"></i></button>`).join('')}
+        <button class="n-week-nav" data-day="${nextWeek}" aria-label="Próxima semana">›</button>
       </div>
-      ${sectionGroups(tasks, 'read', list => `${doneCount(list)} de ${list.length}`)}`,
+      ${sectionGroups(tasks, 'read', list => ahead ? list.length : `${doneCount(list)} de ${list.length}`)}`,
     action: (() => { const n = date < today() ? pendingOn(state, date).length : 0; return n ? `<button class="n-btn n-yellow n-wide" data-carry-day>${n === 1 ? 'Trazer 1 pendente para hoje' : `Trazer ${n} pendentes para hoje`}</button>` : ''; })(),
   };
 }
@@ -1136,7 +1142,7 @@ document.addEventListener('click', e => {
   else if ('carryLast' in d) { const p = lastPending(state, today()); if (p) carry(p.tasks, p.date); }
   else if ('ignoreLast' in d) { const p = lastPending(state, today()); if (p) commit('days', p.date, {date: p.date, reviewed: true}); }
   else if ('openHistory' in d) { historyDate = defaultHistoryDate(); navigation.push('history'); }
-  else if (d.day) { historyDate = d.day > addDays(today(), -1) ? addDays(today(), -1) : d.day; render(); }
+  else if (d.day) { historyDate = d.day; render(); }
   else if ('carryDay' in d) { carry(pendingOn(state, historyDate), historyDate); navigation.back(); }
   else if (d.push) navigation.push(d.push);
   else if ('export' in d) exportBackup();
@@ -1153,7 +1159,7 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('change', e => {
   if (e.target.matches('[data-tab-pref]')) commit('prefs', 'tabs', {[e.target.dataset.tabPref]: e.target.checked});
-  if (e.target.matches('[data-pick-day]') && e.target.value) { historyDate = e.target.value < today() ? e.target.value : addDays(today(), -1); render(); }
+  if (e.target.matches('[data-pick-day]') && e.target.value) { historyDate = e.target.value; render(); }
 });
 $('#sheet').addEventListener('click', e => {
   // A click on the backdrop lands on the dialog itself, outside its box.
@@ -1299,7 +1305,7 @@ const deskAdd = (label, attr) => `<button class="d-add" ${attr}>${ICONS.plus}<sp
 function deskHoje() {
   const tasks = todayTasks();
   const sub = `${longDate(today())}${tasks.length ? ` · ${doneCount(tasks)} de ${tasks.length} feitas` : ''}`;
-  const end = `<button class="d-tool" data-open-history>${ICONS.cal}<span>Dias anteriores</span></button>${deskAdd('Nova tarefa', 'data-new-task')}`;
+  const end = `<button class="d-tool" data-open-history>${ICONS.cal}<span>Calendário</span></button>${deskAdd('Nova tarefa', 'data-new-task')}`;
   const example = sections()[0]?.name.split(' ')[0] || 'seção';
   const quick = `<form class="d-quick" id="quick-task">${ICONS.plus}<input name="entry" placeholder="Nova tarefa para hoje. Ex.: Revisar PR 15h #${esc(example)}" autocomplete="off" maxlength="10000" aria-label="Nova tarefa para hoje" aria-describedby="quick-chips"><kbd>N</kbd></form><div class="d-chips" id="quick-chips" aria-live="polite"></div>`;
   const body = tasks.length ? sectionGroups(tasks, 'edit', list => `${doneCount(list)} de ${list.length}`) : '<p class="d-empty">Nada para hoje. Escreva acima e tecle Return.</p>';
@@ -1466,7 +1472,7 @@ function finderItems(q) {
     {group: 'Ações', icon: ICONS.plus, text: 'Nova tarefa', hint: 'N', run: () => taskSheet({when: 'today'})},
     prefs.reunioes && {group: 'Ações', icon: ICONS.reunioes, text: 'Nova reunião', run: () => taskSheet({when: 'today', meeting: true})},
     prefs.contas && {group: 'Ações', icon: ICONS.contas, text: 'Nova conta', run: () => billSheet()},
-    {group: 'Ações', icon: ICONS.cal, text: 'Dias anteriores', run: () => { historyDate = defaultHistoryDate(); navigation.push('history'); }},
+    {group: 'Ações', icon: ICONS.cal, text: 'Calendário', run: () => { historyDate = defaultHistoryDate(); navigation.push('history'); }},
   ].filter(Boolean);
   if (!key) return [...go, ...actions];
   const where = t => t.date === '' ? 'Backlog' : t.date === today() ? 'Hoje' : dayShort(t.date);
