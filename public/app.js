@@ -55,7 +55,7 @@ const visibleTabs = () => { const prefs = tabPrefs(state); return TABS.filter(([
 
 // ---------- Local state, outbox and sync ----------
 
-let state = initialState(), queue = [], busy = false, events = null, online = navigator.onLine, needsLogin = false, protectedServer = false;
+let state = initialState(), queue = [], busy = false, events = null, online = navigator.onLine, syncError = '', needsLogin = false, protectedServer = false;
 let passkeys = [], regOptions = null, loginOptions = null, loginOptionsError = null;
 // Who is signed in. The local cache belongs to one person (`owner`); another
 // person signing in on the same device starts from a clean cache.
@@ -145,14 +145,14 @@ async function sync() {
       remote = normalize(await (await api('/api/state')).json());
       // Preserve operations entered while the last request was in flight.
       for (const op of queue) apply(remote, op);
-      state = remote; online = true; needsLogin = false; save(); render();
+      state = remote; online = true; needsLogin = false; syncError = ''; save(); render();
       if (!events) {
         events = new EventSource('/api/events');
         events.onmessage = () => void sync();
         events.onerror = () => { online = false; render(); };
       }
     } catch (e) {
-      online = false;
+      online = false; syncError = e.status ? e.message : '';
       if (e.message !== 'login' && navigator.onLine) console.warn('Sincronização:', e.message);
     } finally { busy = false; render(); }
   });
@@ -204,6 +204,9 @@ function nextOccurrence(r) {
 function statusHtml() {
   if (needsLogin) return '<button class="n-status n-status-action" data-login>Entre para sincronizar</button>';
   if (online) return '';
+  const pending = queue.length === 1 ? '1 alteração' : `${queue.length} alterações`;
+  // The server answered and refused: retrying alone will not fix it, so say why.
+  if (syncError) return `<p class="n-status">Não foi possível salvar: ${esc(syncError)}${queue.length ? ` ${pending} aguardando envio.` : ''}</p>`;
   return `<p class="n-status">${queue.length ? `Sem conexão. ${queue.length === 1 ? '1 alteração será enviada' : `${queue.length} alterações serão enviadas`} quando voltar.` : 'Sem conexão.'}</p>`;
 }
 
@@ -1279,9 +1282,9 @@ function deskReunioes() {
   for (let m = first + 60; m < last; m += 60) hours.push(`<span style="top:${y(m)}px">${clock(m)}</span>`);
   const nowLine = days.some(d => d.date === today()) && now >= first && now <= last;
   const grid = `<div class="d-wk-b" style="${cols};height:${y(last)}px"><div class="d-wk-gut">${hours.join('')}${nowLine ? `<span class="is-now" style="top:${y(now)}px">${clock(now)}</span>` : ''}</div>
-    ${days.map(d => `<div class="d-wk-col ${d.date === today() ? 'is-today' : ''}" data-slot-day="${d.date}" data-first="${first}" data-hour="${HOUR}" style="--hour:${HOUR}px">${meetingLanes(d.list.filter(m => m.time).map(m => ({...m, start: minutes(m.time)}))).map(m => block(m, d.date)).join('')}${d.date === today() && nowLine ? `<div class="d-wk-now" style="top:${y(now)}px"></div>` : ''}</div>`).join('')}</div>`;
+    ${days.map(d => `<div class="d-wk-col ${d.date === today() ? 'is-today' : ''}" data-slot-day="${d.date}" data-first="${first}" data-hour="${HOUR}" style="--hour:${HOUR}px">${meetingLanes(d.list.filter(m => m.time).map(m => ({...m, start: minutes(m.time)}))).map(m => block(m, d.date)).join('')}${d.date === today() && nowLine ? `<div class="d-wk-now" style="top:${y(now)}px"></div>` : ''}</div>`).join('')}${nowLine ? `<div class="d-wk-now-all" style="top:${y(now)}px"></div>` : ''}</div>`;
   const end = `<div class="d-pager"><button class="d-tool" data-week="-1" aria-label="Semana anterior">‹</button><button class="d-tool" data-week="0" ${weekStart ? '' : 'disabled'}>Esta semana</button><button class="d-tool" data-week="1" aria-label="Próxima semana">›</button></div>${deskAdd('Nova reunião', 'data-new-meeting')}`;
-  return `${toolbar('Reuniões', weekLabel(days[0].date, days.at(-1).date), end)}<div class="d-week">${statusHtml()}${head}${untimed}${grid}<p class="d-hint">Clique duas vezes num horário livre para marcar uma reunião. Cada bloco ocupa meia hora.</p></div>`;
+  return `${toolbar('Reuniões', weekLabel(days[0].date, days.at(-1).date), end)}<div class="d-week">${statusHtml()}${head}${untimed}${grid}</div>`;
 }
 
 function deskBacklog() {
@@ -1636,7 +1639,7 @@ if ('serviceWorker' in navigator) {
 }
 
 window.addEventListener('online', () => sync());
-window.addEventListener('offline', () => { online = false; render(); });
+window.addEventListener('offline', () => { online = false; syncError = ''; render(); });
 window.addEventListener('storage', e => {
   if (e.key !== 'notas-v1' || busy) return;
   const data = JSON.parse(e.newValue || 'null');

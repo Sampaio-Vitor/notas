@@ -286,6 +286,13 @@ async function body(req) {
   for await (const c of req) { raw += c; if (raw.length > 65536) throw Error('Payload muito grande'); }
   return JSON.parse(raw || '{}');
 }
+// Besides PUBLIC_ORIGIN, the same hostname on another port (the old tailnet-only
+// address) may still write when the page really is served from there; otherwise
+// an app installed from it keeps reading but queues every change forever.
+function trustedOrigin(req) {
+  if (req.headers.origin === (process.env.PUBLIC_ORIGIN || `http://${req.headers.host}`)) return true;
+  try { const o = new URL(req.headers.origin); return o.hostname === rpID && o.host === req.headers.host; } catch { return false; }
+}
 const attempts = new Map();
 // Behind the local HTTPS proxy every socket comes from the proxy; its last X-Forwarded-For hop is the real client.
 const trustProxy = process.env.TRUST_PROXY === '1';
@@ -320,7 +327,7 @@ const server = http.createServer(async (req, res) => {
         return json(503, {ok: false});
       }
     }
-    if (req.method === 'POST' && req.headers.origin && req.headers.origin !== (process.env.PUBLIC_ORIGIN || `http://${req.headers.host}`)) return json(403, {error: 'Origem inválida'});
+    if (req.method === 'POST' && req.headers.origin && !trustedOrigin(req)) return json(403, {error: 'Origem inválida'});
 
     // Public: everything needed to sign in.
     if (route('POST', '/api/login')) {

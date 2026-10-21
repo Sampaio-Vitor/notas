@@ -4,8 +4,9 @@ import {spawn} from 'node:child_process';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {request} from 'node:http';
 import {guardBillOps, editBillOps, deleteBillOps, apply, rollover} from '../public/model.js';
-async function launch(dir){const child=spawn(process.execPath,['server.mjs'],{env:{...process.env,PORT:'0',DATA_DIR:dir,APP_PASSWORD:'test-only-password'},stdio:['ignore','pipe','pipe']});const url=await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('startup timeout')),5000);child.stdout.on('data',b=>{const m=b.toString().match(/http:\/\/[^\s]+/);if(m){clearTimeout(timer);resolve(m[0])}});child.once('exit',code=>reject(Error(`exit ${code}`)))});return {child,url}}
+async function launch(dir,env={}){const child=spawn(process.execPath,['server.mjs'],{env:{...process.env,PORT:'0',DATA_DIR:dir,APP_PASSWORD:'test-only-password',...env},stdio:['ignore','pipe','pipe']});const url=await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('startup timeout')),5000);child.stdout.on('data',b=>{const m=b.toString().match(/http:\/\/[^\s]+/);if(m){clearTimeout(timer);resolve(m[0])}});child.once('exit',code=>reject(Error(`exit ${code}`)))});return {child,url}}
 async function stop(child){await new Promise(resolve=>{child.once('exit',resolve);child.kill('SIGTERM')})}
 test('API: autenticação, sessão, persistência, SSE, idempotência e validação',async()=>{const dir=await mkdtemp(join(tmpdir(),'notas-test-'));let proc;try{
  proc=await launch(dir);let url=proc.url;assert.equal((await fetch(url+'/api/state')).status,401);
@@ -114,3 +115,14 @@ test('API rejeita atomicamente edição offline após encerramento remoto e acei
   await rm(dir, {recursive: true, force: true});
  }
 });
+
+test('API: o mesmo hostname em outra porta pode salvar só quando a página vem de lá',async()=>{const dir=await mkdtemp(join(tmpdir(),'notas-test-'));let proc;try{
+ proc=await launch(dir,{PUBLIC_ORIGIN:'https://notas.example:8443'});const url=proc.url;
+ const cookie=(await fetch(url+'/api/login',{method:'POST',body:JSON.stringify({password:'test-only-password'})})).headers.get('set-cookie').split(';')[0];
+ const op=JSON.stringify({opId:'legacy',collection:'tasks',id:'t',patch:{text:'Velho endereço'}});
+ const post=(host,origin)=>new Promise((resolve,reject)=>{const r=request(url+'/api/operations',{method:'POST',headers:{host,origin,cookie,'Content-Type':'application/json'}},res=>{res.resume();resolve(res.statusCode)});r.on('error',reject);r.end(op)});
+ assert.equal(await post('notas.example:4329','https://notas.example:4329'),200);
+ assert.equal(await post('notas.example:8443','https://notas.example:8443'),200);
+ assert.equal(await post('notas.example:8443','https://notas.example:4329'),403);
+ assert.equal(await post('evil.example:4329','https://evil.example:4329'),403);
+}finally{if(proc)await stop(proc.child);await rm(dir,{recursive:true,force:true})}});
