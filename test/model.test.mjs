@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {initialState, apply, rollover, migrate, repeatsOn, lastPending, pendingOn, carryOps, scheduledTasks, sortedSections, itemKey, itemId, listed, tabPrefs, shiftMonth, scheduledBills, repeatingBills, parseQuickTask, meetingLanes} from '../public/model.js';
+import {initialState, apply, rollover, migrate, repeatsOn, lastPending, pendingOn, carryOps, scheduledTasks, sortedSections, itemKey, itemId, listed, tabPrefs, shiftMonth, scheduledBills, repeatingBills, parseQuickTask, meetingLanes, meetingEnd} from '../public/model.js';
 
 const run = (s, ops) => ops.forEach(op => apply(s, op));
 
@@ -207,9 +207,30 @@ test('captura rápida entende seção e horário e deixa o resto como texto', ()
 });
 
 test('reuniões que se sobrepõem dividem a coluna do dia', () => {
-  const out = meetingLanes([{id: 'c', start: 16 * 60}, {id: 'a', start: 11 * 60}, {id: 'b', start: 11 * 60}, {id: 'd', start: 16 * 60 + 30}]);
+  const half = (id, start) => ({id, start, stop: start + 30});
+  const out = meetingLanes([half('c', 16 * 60), half('a', 11 * 60), half('b', 11 * 60), half('d', 16 * 60 + 30)]);
   const by = Object.fromEntries(out.map(x => [x.id, [x.lane, x.lanes]]));
   assert.deepEqual(by, {a: [0, 2], b: [1, 2], c: [0, 1], d: [0, 1]});
-  const chain = Object.fromEntries(meetingLanes([{id: 'x', start: 0}, {id: 'y', start: 20}, {id: 'z', start: 40}]).map(x => [x.id, [x.lane, x.lanes]]));
+  const chain = Object.fromEntries(meetingLanes([half('x', 0), half('y', 20), half('z', 40)]).map(x => [x.id, [x.lane, x.lanes]]));
   assert.deepEqual(chain, {x: [0, 2], y: [1, 2], z: [0, 2]});
+});
+
+test('reuniões longas ocupam a coluna até o fim', () => {
+  const out = meetingLanes([{id: 'long', start: 600, stop: 720}, {id: 'mid', start: 660, stop: 690}, {id: 'after', start: 720, stop: 750}]);
+  const by = Object.fromEntries(out.map(x => [x.id, [x.lane, x.lanes]]));
+  assert.deepEqual(by, {long: [0, 2], mid: [1, 2], after: [0, 1]});
+});
+
+test('reunião sem fim, ou com fim antes do início, dura 30 minutos', () => {
+  assert.equal(meetingEnd({time: '14:00', end: '15:30'}), '15:30');
+  assert.equal(meetingEnd({time: '14:00'}), '14:30');
+  assert.equal(meetingEnd({time: '14:00', end: '13:00'}), '14:30');
+  assert.equal(meetingEnd({time: '23:45', end: ''}), '23:59');
+});
+
+test('a ocorrência de uma reunião repetida leva o fim junto', () => {
+  const s = initialState();
+  s.repeats.r = {id: 'r', text: 'Planning', section: 's1', time: '10:00', end: '11:30', days: '1', monthDay: 0, meeting: true};
+  for (const op of rollover(s, '2026-10-19')) apply(s, op);
+  assert.equal(s.tasks['r-r-2026-10-19'].end, '11:30');
 });

@@ -247,8 +247,8 @@ function mcpResponse(agent, message) {
 const billCalculation = {calcMode: 'string', unitAmount: 'number', weekdays: 'string', starts: 'string', excluded: 'string', lag: 'number'};
 const schema = {
   sections: {name: 'string', order: 'number', deleted: 'boolean'},
-  tasks: {text: 'string', section: 'string', date: 'string', time: 'string', done: 'boolean', repeat: 'string', from: 'string', meeting: 'boolean', deleted: 'boolean'},
-  repeats: {text: 'string', section: 'string', time: 'string', days: 'string', monthDay: 'number', meeting: 'boolean', deleted: 'boolean'},
+  tasks: {text: 'string', section: 'string', date: 'string', time: 'string', end: 'string', done: 'boolean', repeat: 'string', from: 'string', meeting: 'boolean', deleted: 'boolean'},
+  repeats: {text: 'string', section: 'string', time: 'string', end: 'string', days: 'string', monthDay: 'number', meeting: 'boolean', deleted: 'boolean'},
   bills: {text: 'string', amount: 'number', due: 'number', repeat: 'boolean', every: 'number', group: 'string', month: 'string', done: 'boolean', skipped: 'boolean', skipReason: 'string', deleted: 'boolean', ...billCalculation},
   billRules: {text: 'string', amount: 'number', due: 'number', repeat: 'boolean', every: 'number', month: 'string', ...billCalculation},
   meetings: {text: 'string', time: 'string', weekday: 'number', section: 'string', deleted: 'boolean'},
@@ -257,9 +257,10 @@ const schema = {
   prefs: {reunioes: 'boolean', backlog: 'boolean', compras: 'boolean', contas: 'boolean'},
   shopping: {text: 'string', done: 'boolean', listed: 'boolean', added: 'number', by: 'string'},
 };
-// Field formats beyond the type check; time is optional (empty string).
+// Field formats beyond the type check; time and a meeting's end are optional (empty string).
+const clockTime = v => v === '' || /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
 const formats = {
-  time: v => v === '' || /^([01]\d|2[0-3]):[0-5]\d$/.test(v), days: v => /^[0-6]{0,7}$/.test(v),
+  time: clockTime, end: clockTime, days: v => /^[0-6]{0,7}$/.test(v),
   every: v => Number.isInteger(v) && v >= 1 && v <= 24, monthDay: v => Number.isInteger(v) && v <= 31, due: v => Number.isInteger(v) && v <= 31,
   month: v => /^\d{4}-(0[1-9]|1[0-2])$/.test(v),
   calcMode: v => ['fixed', 'occurrence'].includes(v),

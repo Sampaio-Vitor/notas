@@ -3,7 +3,7 @@ import {createNavigation} from './navigation.js';
 const report = message => { try { navigator.sendBeacon?.('/api/client-log', new Blob([JSON.stringify({message})], {type: 'application/json'})); } catch {} };
 addEventListener('error', e => report(`${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`));
 addEventListener('unhandledrejection', e => report(`promise: ${e.reason?.stack || e.reason}`));
-import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, parseQuickTask, meetingLanes} from './model.js';
+import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, parseQuickTask, meetingLanes, meetingEnd, toMinutes, fromMinutes} from './model.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -22,6 +22,8 @@ const addMonths = (month, n) => { const d = new Date(`${month}-01T12:00:00`); d.
 const monthName = month => { const name = cap(MONTHS[Number(month.slice(5, 7)) - 1]); return month.slice(0, 4) === today().slice(0, 4) ? name : `${name} de ${month.slice(0, 4)}`; };
 const longDate = date => `${WEEK[weekday(date)]}, ${Number(date.slice(8, 10))} de ${MONTHS[Number(date.slice(5, 7)) - 1]}`;
 const shortTime = t => t ? t.replace(/^0/, '') : '';
+// "14:00–15:30" for a meeting with a time; just the time for anything else.
+const timeLabel = t => t.meeting && t.time ? `${shortTime(t.time)}–${shortTime(meetingEnd(t))}` : shortTime(t.time);
 
 // "de ontem", "de sexta", "de 3 de outubro"
 function fromDay(date) {
@@ -235,7 +237,7 @@ function statusHtml() {
 }
 
 function taskRow(t, mode = 'edit') {
-  const meta = t.time || t.repeat ? `<span class="n-meta">${t.repeat ? ICONS.rep : ''}${esc(shortTime(t.time))}</span>` : '';
+  const meta = t.time || t.repeat ? `<span class="n-meta">${t.repeat ? ICONS.rep : ''}${esc(timeLabel(t))}</span>` : '';
   if (mode === 'read') {
     return `<div class="n-row ${t.done ? 'is-done' : ''}"><span class="n-check" aria-hidden="true">${ICONS.check}</span><span class="n-text">${esc(t.text)}</span>${meta}</div>`;
   }
@@ -284,7 +286,7 @@ function viewHoje() {
 function viewReunioes() {
   const now = todayMeetings(), days = Array.from({length: 6}, (_, i) => addDays(today(), i + 1));
   const once = scheduled().filter(t => t.meeting), horizon = days.at(-1);
-  const row = (item, date) => `<div class="n-row n-plain"><button class="n-text n-two" ${item.repeats ? `data-edit-repeat="${item.id}"` : `data-edit-task="${item.id}"`}><span>${esc(item.text)}</span><span class="n-meta">${date ? `<span class="n-accent">${dayShort(date)}</span> · ` : ''}${esc(sectionName(item.section))}</span></button>${item.time || item.repeats ? `<span class="n-meta">${item.repeats ? ICONS.rep : ''}${esc(shortTime(item.time))}</span>` : ''}</div>`;
+  const row = (item, date) => `<div class="n-row n-plain"><button class="n-text n-two" ${item.repeats ? `data-edit-repeat="${item.id}"` : `data-edit-task="${item.id}"`}><span>${esc(item.text)}</span><span class="n-meta">${date ? `<span class="n-accent">${dayShort(date)}</span> · ` : ''}${esc(sectionName(item.section))}</span></button>${item.time || item.repeats ? `<span class="n-meta">${item.repeats ? ICONS.rep : ''}${esc(timeLabel(item))}</span>` : ''}</div>`;
   const group = (title, rows, count) => `<section><div class="n-group-h"><h2>${title}</h2><span>${count}</span></div><div class="n-list">${rows}</div></section>`;
   const upcoming = days.map(date => {
     const list = [...live(state, 'repeats').filter(r => r.meeting && repeatsOn(r, date)).map(r => ({...r, repeats: true})), ...once.filter(t => t.date === date)].sort((a, b) => (a.time || '99').localeCompare(b.time || '99'));
@@ -298,7 +300,7 @@ function viewReunioes() {
   return `${statusHtml()}<div class="n-top"><span></span></div><h1 class="n-title">Reuniões</h1><p class="n-sub">${longDate(today())}</p>${today_}${upcoming}${laterGroup}`;
 }
 
-const agendadasGroup = waiting => waiting.length ? `<section><div class="n-group-h"><h2>Agendadas</h2><span>${waiting.length}</span></div><div class="n-list">${waiting.map(t => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-task="${t.id}"><span>${esc(t.text)}</span><span class="n-meta"><span class="n-accent">${dayShort(t.date)}</span> · ${esc(sectionName(t.section))}</span></button>${t.time ? `<span class="n-meta">${esc(shortTime(t.time))}</span>` : ''}</div>`).join('')}</div></section>` : '';
+const agendadasGroup = waiting => waiting.length ? `<section><div class="n-group-h"><h2>Agendadas</h2><span>${waiting.length}</span></div><div class="n-list">${waiting.map(t => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-task="${t.id}"><span>${esc(t.text)}</span><span class="n-meta"><span class="n-accent">${dayShort(t.date)}</span> · ${esc(sectionName(t.section))}</span></button>${t.time ? `<span class="n-meta">${esc(timeLabel(t))}</span>` : ''}</div>`).join('')}</div></section>` : '';
 
 function viewBacklog() {
   const tasks = backlog(), waiting = selecting ? [] : scheduled().filter(t => !(meetingsApart() && t.meeting));
@@ -513,7 +515,7 @@ function pageRepeats() {
   const list = live(state, 'repeats');
   const groups = sections().map(s => {
     const items = list.filter(r => r.section === s.id).sort((a, b) => (a.time || '99').localeCompare(b.time || '99'));
-    return items.length ? `<div class="n-group-h"><h2>${esc(s.name)}</h2></div><div class="n-list">${items.map(r => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-repeat="${r.id}"><span>${esc(r.text)}</span><span class="n-meta">${esc(repeatLabel(r))}${r.time ? `, ${shortTime(r.time)}` : ''}</span></button><span class="n-chev" aria-hidden="true">›</span></div>`).join('')}</div>` : '';
+    return items.length ? `<div class="n-group-h"><h2>${esc(s.name)}</h2></div><div class="n-list">${items.map(r => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-repeat="${r.id}"><span>${esc(r.text)}</span><span class="n-meta">${esc(repeatLabel(r))}${r.time ? `, ${timeLabel(r)}` : ''}</span></button><span class="n-chev" aria-hidden="true">›</span></div>`).join('')}</div>` : '';
   }).join('');
   return {html: `<div class="n-top"><button class="n-link" data-back>‹ Ajustes</button></div><h1 class="n-title">Repetições</h1>${groups || '<div class="n-empty"><p>Nenhuma tarefa se repete.</p><p class="n-note">Ao criar uma tarefa para hoje, escolha Repetir.</p></div>'}`, action: ''};
 }
@@ -615,7 +617,8 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
     <div class="n-opts" data-today-only>
       <label class="n-opt" data-later-only>Data<input type="date" name="date" min="${addDays(today(), 1)}" value="${initialWhen === 'later' ? task?.date || presetDate : addDays(today(), 1)}"></label>
       <label class="n-opt">Reunião<input type="checkbox" class="n-switch" name="meeting" ${isMeeting ? 'checked' : ''}></label>
-      <label class="n-opt">Horário<input type="time" name="time" value="${esc(source?.time || presetTime || '')}"></label>
+      <label class="n-opt"><span data-time-label>Horário</span><input type="time" name="time" value="${esc(source?.time || presetTime || '')}"></label>
+      <label class="n-opt" data-meeting-only>Fim<input type="time" name="end" value="${esc(source?.time || presetTime ? meetingEnd({time: source?.time || presetTime, end: source?.end}) : '')}"></label>
       <label class="n-opt" data-repeat-only>Repetir<select name="rule">
         ${[['none', 'Não repete'], ['daily', 'Todo dia'], ['weekdays', 'Dias úteis'], ['custom', 'Dias escolhidos'], ['monthly', 'Todo mês']].filter(([v]) => !editingRepeat || v !== 'none').map(([v, l]) => `<option value="${v}" ${v === kind ? 'selected' : ''}>${l}</option>`).join('')}
       </select></label>
@@ -635,7 +638,21 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       $('[data-repeat-only]', form).hidden = !repeats;
       $('[data-days]', form).hidden = !repeats || !['daily', 'weekdays', 'custom'].includes(rule);
       $('[data-month-day]', form).hidden = !repeats || rule !== 'monthly';
+      const meets = form.elements.meeting.checked;
+      $('[data-meeting-only]', form).hidden = !meets;
+      $('[data-time-label]', form).textContent = meets ? 'Início' : 'Horário';
     };
+    // Moving the start keeps the meeting's length; a first start gets 30 minutes.
+    let lastStart = form.elements.time.value;
+    form.elements.time.addEventListener('change', () => {
+      const start = form.elements.time.value, end = form.elements.end.value;
+      if (start) {
+        const length = lastStart && end > lastStart ? toMinutes(end) - toMinutes(lastStart) : 30;
+        form.elements.end.value = fromMinutes(Math.min(toMinutes(start) + length, 23 * 60 + 59));
+      }
+      lastStart = start;
+    });
+    form.elements.meeting.addEventListener('change', update);
     form.elements.rule.addEventListener('change', () => {
       const preset = {daily: '0123456', weekdays: '12345'}[form.elements.rule.value];
       if (preset) for (const box of form.elements.day) box.checked = preset.includes(box.value);
@@ -658,6 +675,8 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       if (chosenWhen === 'later' && !(later > today())) { toast('Escolha uma data a partir de amanhã.'); return form.elements.date.focus(); }
       const time = dated ? form.elements.time.value : '';
       const meeting = dated && form.elements.meeting.checked;
+      const end = meeting && time ? form.elements.end.value || meetingEnd({time}) : '';
+      if (end && end <= time) { toast('O fim da reunião precisa ser depois do início.'); return form.elements.end.focus(); }
       const rule = form.elements.rule.value;
       const chosen = [...form.elements.day].filter(b => b.checked).map(b => b.value).join('');
       const wantsRepeat = onToday && (rule === 'monthly' || (rule !== 'none' && chosen));
@@ -669,7 +688,7 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
         rid = '';
       } else if (wantsRepeat) {
         rid ||= uid();
-        template = {text: value, section: sectionId, time, days: rule === 'monthly' ? '' : chosen, monthDay: rule === 'monthly' ? Number(form.elements.monthDay.value) : 0, meeting};
+        template = {text: value, section: sectionId, time, end, days: rule === 'monthly' ? '' : chosen, monthDay: rule === 'monthly' ? Number(form.elements.monthDay.value) : 0, meeting};
         ops.push({collection: 'repeats', id: rid, patch: template});
       } else if (rid) {
         ops.push({collection: 'repeats', id: rid, patch: {deleted: true}});
@@ -679,15 +698,15 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       if (!editingRepeat) {
         if (task) {
           const date = later || (onToday ? (task.date && task.date <= today() ? task.date : today()) : '');
-          ops.push({collection: 'tasks', id: task.id, patch: {text: value, section: sectionId, time, meeting, repeat: rid, date}});
+          ops.push({collection: 'tasks', id: task.id, patch: {text: value, section: sectionId, time, end, meeting, repeat: rid, date}});
         } else if (later) {
-          ops.push({collection: 'tasks', id: uid(), patch: {text: value, section: sectionId, time, meeting, repeat: '', date: later, done: false}});
+          ops.push({collection: 'tasks', id: uid(), patch: {text: value, section: sectionId, time, end, meeting, repeat: '', date: later, done: false}});
         } else if (wantsRepeat && !repeatsOn(template, today())) {
           const next = nextOccurrence(template);
           message = next ? `Repete a partir de ${nextDayLabel(next)}.` : '';
         } else {
           const newId = wantsRepeat ? occurrenceId(rid, today()) : uid();
-          ops.push({collection: 'tasks', id: newId, patch: {text: value, section: sectionId, time, meeting, repeat: rid, date: onToday ? today() : '', done: false}});
+          ops.push({collection: 'tasks', id: newId, patch: {text: value, section: sectionId, time, end, meeting, repeat: rid, date: onToday ? today() : '', done: false}});
           if (!onToday && tab !== 'backlog') message = 'Tarefa salva no backlog.';
         }
       }
@@ -1253,7 +1272,7 @@ function sectionColor(id) {
   return i < 0 ? '#8e8e93' : SECTION_COLORS[i % SECTION_COLORS.length];
 }
 const dot = id => `<i class="d-dot" style="background:${sectionColor(id)}" aria-hidden="true"></i>`;
-const minutes = time => Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5));
+const minutes = toMinutes;
 const clock = m => `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
 const nowMinutes = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
 const mondayOf = date => addDays(date, -((weekday(date) + 6) % 7));
@@ -1302,7 +1321,7 @@ function hojeRail() {
     const rows = meetings.map(t => {
       const start = t.time ? minutes(t.time) : null, soon = start !== null && start > now && start - now <= 60;
       const line = !marked && start !== null && start > now ? (marked = true, `<div class="d-now"><b>${clock(now)}</b><hr></div>`) : '';
-      return `${line}<button class="d-ev ${t.done || (start !== null && start + 30 <= now) ? 'is-past' : ''}" data-edit-task="${t.id}"><b>${t.time ? esc(shortTime(t.time)) : '·'}</b><span style="--c:${sectionColor(t.section)}">${esc(t.text)}<small class="${soon ? 'n-accent' : ''}">${soon ? `em ${start - now} min` : esc(sectionName(t.section))}</small></span></button>`;
+      return `${line}<button class="d-ev ${t.done || (start !== null && minutes(meetingEnd(t)) <= now) ? 'is-past' : ''}" data-edit-task="${t.id}"><b>${t.time ? esc(timeLabel(t)) : '·'}</b><span style="--c:${sectionColor(t.section)}">${esc(t.text)}<small class="${soon ? 'n-accent' : ''}">${soon ? `em ${start - now} min` : esc(sectionName(t.section))}</small></span></button>`;
     }).join('');
     cards.push(`<section class="d-card"><div class="d-card-h"><h2>Reuniões de hoje</h2>${prefs.reunioes ? '<button class="n-link" data-tab="reunioes">Semana</button>' : ''}</div>${rows || '<p class="d-card-empty">Nenhuma reunião hoje.</p>'}</section>`);
   }
@@ -1335,15 +1354,16 @@ function weekLabel(first, last) {
 function deskReunioes() {
   const monday = weekStart || mondayOf(today()), now = nowMinutes(), HOUR = 56;
   const days = Array.from({length: 7}, (_, i) => addDays(monday, i)).map(date => ({date, list: weekMeetings(date)})).filter((d, i) => i < 5 || d.list.length);
-  const starts = days.flatMap(d => d.list.filter(m => m.time).map(m => minutes(m.time)));
-  const first = Math.min(8 * 60, ...starts.map(m => Math.floor(m / 60) * 60)), last = Math.max(19 * 60, ...starts.map(m => Math.ceil((m + 30) / 60) * 60));
+  const timed = days.flatMap(d => d.list.filter(m => m.time));
+  const first = Math.min(8 * 60, ...timed.map(m => Math.floor(minutes(m.time) / 60) * 60)), last = Math.max(19 * 60, ...timed.map(m => Math.ceil(minutes(meetingEnd(m)) / 60) * 60));
   const y = m => (m - first) / 60 * HOUR;
   const cols = `--days:${days.length}`;
   const block = (m, date) => {
-    const start = minutes(m.time), gone = m.done || date < today() || (date === today() && start + 30 <= now);
+    const {start, stop} = m, gone = m.done || date < today() || (date === today() && stop <= now);
+    const box = `top:${y(start) + 1}px;height:${Math.max(y(stop) - y(start) - 2, 12)}px;left:calc(${m.lane} * 100% / ${m.lanes} + 3px);width:calc(100% / ${m.lanes} - 6px)`;
     const open = m.repeats ? `data-edit-repeat="${m.id}"` : `data-edit-task="${m.id}" data-row="${m.id}"`;
-    if (privateWeek) return `<button class="d-evt is-private" ${open} aria-label="Ocupado, ${shortTime(m.time)}" style="top:${y(start) + 1}px;height:${HOUR / 2 - 2}px;left:calc(${m.lane} * 100% / ${m.lanes} + 3px);width:calc(100% / ${m.lanes} - 6px)"></button>`;
-    return `<button class="d-evt ${gone ? 'is-past' : ''} ${m.done ? 'is-done' : ''}" ${open} style="--c:${sectionColor(m.section)};top:${y(start) + 1}px;height:${HOUR / 2 - 2}px;left:calc(${m.lane} * 100% / ${m.lanes} + 3px);width:calc(100% / ${m.lanes} - 6px)" title="${esc(m.text)}, ${shortTime(m.time)} · ${esc(sectionName(m.section))}${m.repeats ? ` · ${esc(repeatLabel(m))}` : ''}"><b>${esc(m.text)}</b><span>${shortTime(m.time)}</span></button>`;
+    if (privateWeek) return `<button class="d-evt is-private" ${open} aria-label="Ocupado, ${timeLabel(m)}" style="${box}"></button>`;
+    return `<button class="d-evt ${gone ? 'is-past' : ''} ${m.done ? 'is-done' : ''}" ${open} style="--c:${sectionColor(m.section)};${box}" title="${esc(m.text)}, ${timeLabel(m)} · ${esc(sectionName(m.section))}${m.repeats ? ` · ${esc(repeatLabel(m))}` : ''}"><b>${esc(m.text)}</b><span>${timeLabel(m)}</span></button>`;
   };
   const head = `<div class="d-wk-h" style="${cols}"><span></span>${days.map(d => `<div class="d-wk-day ${d.date === today() ? 'is-today' : ''}"><small>${WEEK[weekday(d.date)].slice(0, 3)}</small><b>${Number(d.date.slice(8, 10))}</b></div>`).join('')}</div>`;
   const untimed = !privateWeek && days.some(d => d.list.some(m => !m.time))
@@ -1352,7 +1372,7 @@ function deskReunioes() {
   for (let m = first + 60; m < last; m += 60) hours.push(`<span style="top:${y(m)}px">${clock(m)}</span>`);
   const nowLine = !privateWeek && days.some(d => d.date === today()) && now >= first && now <= last;
   const grid = `<div class="d-wk-b" style="${cols};height:${y(last)}px"><div class="d-wk-gut">${hours.join('')}${nowLine ? `<span class="is-now" style="top:${y(now)}px">${clock(now)}</span>` : ''}</div>
-    ${days.map(d => `<div class="d-wk-col ${d.date === today() ? 'is-today' : ''}" data-slot-day="${d.date}" data-first="${first}" data-hour="${HOUR}" style="--hour:${HOUR}px">${meetingLanes(d.list.filter(m => m.time).map(m => ({...m, start: minutes(m.time)}))).map(m => block(m, d.date)).join('')}${d.date === today() && nowLine ? `<div class="d-wk-now" style="top:${y(now)}px"></div>` : ''}</div>`).join('')}${nowLine ? `<div class="d-wk-now-all" style="top:${y(now)}px"></div>` : ''}</div>`;
+    ${days.map(d => `<div class="d-wk-col ${d.date === today() ? 'is-today' : ''}" data-slot-day="${d.date}" data-first="${first}" data-hour="${HOUR}" style="--hour:${HOUR}px">${meetingLanes(d.list.filter(m => m.time).map(m => ({...m, start: minutes(m.time), stop: minutes(meetingEnd(m))}))).map(m => block(m, d.date)).join('')}${d.date === today() && nowLine ? `<div class="d-wk-now" style="top:${y(now)}px"></div>` : ''}</div>`).join('')}${nowLine ? `<div class="d-wk-now-all" style="top:${y(now)}px"></div>` : ''}</div>`;
   const end = `<div class="d-pager"><button class="d-tool" data-week="-1" aria-label="Semana anterior">‹</button><button class="d-tool" data-week="0" ${weekStart ? '' : 'disabled'}>Esta semana</button><button class="d-tool" data-week="1" aria-label="Próxima semana">›</button></div><button class="d-tool ${privateWeek ? 'is-on' : ''}" data-private-week aria-pressed="${privateWeek}" title="${privateWeek ? 'Mostrar reuniões' : 'Só mostrar horários ocupados'}">${ICONS.eye}</button>${deskAdd('Nova reunião', 'data-new-meeting')}`;
   return `${toolbar('Reuniões', weekLabel(days[0].date, days.at(-1).date), end)}<div class="d-week">${statusHtml()}${head}${untimed}${grid}</div>`;
 }
@@ -1451,8 +1471,8 @@ function finderItems(q) {
   if (!key) return [...go, ...actions];
   const where = t => t.date === '' ? 'Backlog' : t.date === today() ? 'Hoje' : dayShort(t.date);
   const tasks = live(state, 'tasks').filter(t => t.date === '' || t.date >= today()).sort((a, b) => (a.date || '9').localeCompare(b.date || '9'))
-    .map(t => ({group: t.meeting ? 'Reuniões' : 'Tarefas', color: sectionColor(t.section), text: t.text, sub: `${where(t)} · ${sectionName(t.section)}${t.time ? ` · ${shortTime(t.time)}` : ''}${t.done ? ' · feita' : ''}`, run: () => taskSheet({id: t.id})}));
-  const repeats = live(state, 'repeats').map(r => ({group: 'Repetições', color: sectionColor(r.section), text: r.text, sub: `${repeatLabel(r)}${r.time ? `, ${shortTime(r.time)}` : ''} · ${sectionName(r.section)}`, run: () => taskSheet({repeatId: r.id})}));
+    .map(t => ({group: t.meeting ? 'Reuniões' : 'Tarefas', color: sectionColor(t.section), text: t.text, sub: `${where(t)} · ${sectionName(t.section)}${t.time ? ` · ${timeLabel(t)}` : ''}${t.done ? ' · feita' : ''}`, run: () => taskSheet({id: t.id})}));
+  const repeats = live(state, 'repeats').map(r => ({group: 'Repetições', color: sectionColor(r.section), text: r.text, sub: `${repeatLabel(r)}${r.time ? `, ${timeLabel(r)}` : ''} · ${sectionName(r.section)}`, run: () => taskSheet({repeatId: r.id})}));
   const bills = prefs.contas ? live(state, 'bills').filter(b => b.month === today().slice(0, 7)).map(b => ({group: 'Contas', icon: ICONS.contas, text: b.text, sub: `${b.done ? 'Paga' : b.due ? `Dia ${b.due}` : 'Sem dia'} · ${money(b.amount)}`, run: () => billSheet(b.id)})) : [];
   const shop = prefs.compras ? listed(state).map(i => ({group: 'Compras', icon: ICONS.compras, text: i.text, sub: i.done ? 'No carrinho' : 'Para comprar', run: () => switchTab('compras')})) : [];
   return [...go, ...actions, ...tasks, ...repeats, ...bills, ...shop].filter(x => itemKey(`${x.text} ${x.sub || ''} ${x.group}`).includes(key)).slice(0, 40);
@@ -1587,8 +1607,7 @@ document.addEventListener('dblclick', e => {
   if (date < today()) { toast('Escolha um dia a partir de hoje.'); return; }
   const offset = e.clientY - col.getBoundingClientRect().top;
   const start = Math.min(23 * 60 + 30, Number(col.dataset.first) + Math.floor(offset / Number(col.dataset.hour) * 2) * 30);
-  const time = `${String(Math.floor(start / 60)).padStart(2, '0')}:${String(start % 60).padStart(2, '0')}`;
-  taskSheet({when: date === today() ? 'today' : 'later', meeting: true, date, time});
+  taskSheet({when: date === today() ? 'today' : 'later', meeting: true, date, time: fromMinutes(start)});
 });
 
 document.addEventListener('submit', e => {

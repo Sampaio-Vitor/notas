@@ -222,7 +222,7 @@ export function rollover(state, date) {
   if (!state.days[date]) {
     add('days', date, {date});
     for (const r of live(state, 'repeats').filter(r => repeatsOn(r, date))) {
-      add('tasks', occurrenceId(r.id, date), {text: r.text, section: r.section, time: r.time || '', date, done: false, repeat: r.id, ...(r.meeting ? {meeting: true} : {})});
+      add('tasks', occurrenceId(r.id, date), {text: r.text, section: r.section, time: r.time || '', date, done: false, repeat: r.id, ...(r.meeting ? {meeting: true, end: r.end || ''} : {})});
     }
   }
   const month = date.slice(0, 7);
@@ -304,18 +304,24 @@ export function parseQuickTask(input, sections) {
   return {text: text.replace(/\s+/g, ' ').trim(), section, time};
 }
 
+// Meetings run from `time` to `end` ("HH:MM", same day). Ones saved before
+// meetings had an end, or with an end not after the start, last 30 minutes.
+export const toMinutes = time => Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5));
+export const fromMinutes = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+export const meetingEnd = m => m.end && m.end > m.time ? m.end : fromMinutes(Math.min(toMinutes(m.time) + 30, 23 * 60 + 59));
+
 // Week view: meetings that overlap share the width side by side. Each item has
-// `start` in minutes; meetings have no end time, so each one takes `length`.
-export function meetingLanes(items, length = 30) {
+// `start` and `stop` in minutes.
+export function meetingLanes(items) {
   const placed = [];
   let cluster = [], ends = [], clusterEnd = -Infinity;
   const close = () => { for (const item of cluster) item.lanes = ends.length; cluster = []; ends = []; };
-  for (const item of [...items].sort((a, b) => a.start - b.start)) {
+  for (const item of [...items].sort((a, b) => a.start - b.start || b.stop - a.stop)) {
     if (item.start >= clusterEnd) close();
     let lane = ends.findIndex(end => end <= item.start);
     if (lane < 0) lane = ends.length;
-    ends[lane] = item.start + length;
-    clusterEnd = Math.max(clusterEnd, item.start + length);
+    ends[lane] = item.stop;
+    clusterEnd = Math.max(clusterEnd, item.stop);
     const out = {...item, lane};
     cluster.push(out); placed.push(out);
   }
