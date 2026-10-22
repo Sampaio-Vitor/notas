@@ -26,6 +26,21 @@ test('ocorrência marcada antes do dia chegar não é refeita pela virada', () =
   assert.equal(s.tasks['r-r-2026-10-20'].time, '10:00');
 });
 
+test('repetição a cada 2 semanas conta as semanas a partir do início', () => {
+  // 2026-10-21 é quarta; segundas e quartas, semana sim, semana não.
+  const r = {days: '13', monthDay: 0, weeks: 2, start: '2026-10-21'};
+  assert.ok(!repeatsOn(r, '2026-10-19'));
+  assert.ok(repeatsOn(r, '2026-10-21'));
+  assert.ok(!repeatsOn(r, '2026-10-26'));
+  assert.ok(!repeatsOn(r, '2026-10-28'));
+  assert.ok(repeatsOn(r, '2026-11-02'));
+  assert.ok(repeatsOn(r, '2026-11-04'));
+  assert.ok(!repeatsOn(r, '2026-11-05'));
+  assert.ok(repeatsOn(r, '2027-03-24'));
+  assert.ok(!repeatsOn(r, '2027-03-31'));
+  assert.ok(repeatsOn({days: '3', monthDay: 0, weeks: 1}, '2026-10-28'));
+});
+
 test('repetição mensal usa o último dia quando o mês é mais curto', () => {
   const r = {monthDay: 31, days: ''};
   assert.ok(repeatsOn(r, '2026-02-28'));

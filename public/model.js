@@ -41,14 +41,20 @@ export function sortedSections(state) {
     .sort((a, b) => a.order - b.order);
 }
 
+const dayNumber = date => Date.UTC(Number(date.slice(0, 4)), Number(date.slice(5, 7)) - 1, Number(date.slice(8, 10))) / 864e5;
+
 // A repeat has either a day of the month (monthDay > 0) or a set of weekdays ("12345").
+// With weeks > 1 the weekdays come every `weeks` weeks, counted from the week of `start`.
 export function repeatsOn(repeat, date) {
   if (repeat.deleted) return false;
   if (repeat.monthDay > 0) {
     const day = Number(date.slice(8, 10));
     return day === Math.min(repeat.monthDay, lastDayOfMonth(date));
   }
-  return String(repeat.days || '').includes(String(weekday(date)));
+  if (!String(repeat.days || '').includes(String(weekday(date)))) return false;
+  if (!(repeat.weeks > 1 && repeat.start)) return true;
+  if (date < repeat.start) return false;
+  return Math.floor((dayNumber(date) - dayNumber(repeat.start) + weekday(repeat.start)) / 7) % repeat.weeks === 0;
 }
 
 // ---- Bills: months are 'YYYY-MM'. A bill repeats every `every` months (default 1);

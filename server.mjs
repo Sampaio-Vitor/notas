@@ -248,7 +248,7 @@ const billCalculation = {calcMode: 'string', unitAmount: 'number', weekdays: 'st
 const schema = {
   sections: {name: 'string', order: 'number', deleted: 'boolean'},
   tasks: {text: 'string', section: 'string', date: 'string', time: 'string', end: 'string', done: 'boolean', repeat: 'string', from: 'string', meeting: 'boolean', deleted: 'boolean'},
-  repeats: {text: 'string', section: 'string', time: 'string', end: 'string', days: 'string', monthDay: 'number', meeting: 'boolean', deleted: 'boolean'},
+  repeats: {text: 'string', section: 'string', time: 'string', end: 'string', days: 'string', monthDay: 'number', weeks: 'number', start: 'string', meeting: 'boolean', deleted: 'boolean'},
   bills: {text: 'string', amount: 'number', due: 'number', repeat: 'boolean', every: 'number', group: 'string', month: 'string', done: 'boolean', skipped: 'boolean', skipReason: 'string', deleted: 'boolean', ...billCalculation},
   billRules: {text: 'string', amount: 'number', due: 'number', repeat: 'boolean', every: 'number', month: 'string', ...billCalculation},
   meetings: {text: 'string', time: 'string', weekday: 'number', section: 'string', deleted: 'boolean'},
@@ -261,7 +261,7 @@ const schema = {
 const clockTime = v => v === '' || /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
 const formats = {
   time: clockTime, end: clockTime, days: v => /^[0-6]{0,7}$/.test(v),
-  every: v => Number.isInteger(v) && v >= 1 && v <= 24, monthDay: v => Number.isInteger(v) && v <= 31, due: v => Number.isInteger(v) && v <= 31,
+  every: v => Number.isInteger(v) && v >= 1 && v <= 24, weeks: v => Number.isInteger(v) && v >= 1 && v <= 8, monthDay: v => Number.isInteger(v) && v <= 31, due: v => Number.isInteger(v) && v <= 31,
   month: v => /^\d{4}-(0[1-9]|1[0-2])$/.test(v),
   calcMode: v => ['fixed', 'occurrence'].includes(v),
   lag: v => v === 0 || v === 1,
@@ -270,6 +270,7 @@ const formats = {
   weekdays: v => /^[0-6]{0,7}$/.test(v) && new Set(v).size === v.length,
   starts: v => v === '' || (/^\d{4}-\d{2}-\d{2}$/.test(v) && Number.isFinite(Date.parse(`${v}T12:00:00Z`)) && new Date(`${v}T12:00:00Z`).toISOString().slice(0, 10) === v),
   excluded: v => v === '' || (v.split(',').length <= 31 && v.split(',').every(date => /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(date))),
+  start: v => formats.date(v),
   date: v => v === '' || (/^\d{4}-\d{2}-\d{2}$/.test(v) && Number.isFinite(Date.parse(`${v}T12:00:00Z`)) && new Date(`${v}T12:00:00Z`).toISOString().slice(0, 10) === v),
   order: v => Number.isInteger(v), weekday: v => Number.isInteger(v) && v <= 6,
 };

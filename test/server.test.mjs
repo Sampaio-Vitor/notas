@@ -32,6 +32,8 @@ test('API: autenticação, sessão, persistência, SSE, idempotência e validaç
  assert.equal((await post({opId:'bad-date',collection:'tasks',id:'t-date',patch:{date:'2026-02-30'}})).status,400);
  assert.equal((await post({opId:'free-date',collection:'tasks',id:'t-date',patch:{date:'amanhã'}})).status,400);
  assert.equal((await post({opId:'future-date',collection:'tasks',id:'t-date',patch:{text:'Kickoff',date:'2026-11-05'}})).status,200);
+ assert.equal((await post({opId:'bad-weeks',collection:'repeats',id:'r2',patch:{weeks:0}})).status,400);
+ assert.equal((await post({opId:'bad-start',collection:'repeats',id:'r2',patch:{start:'2026-02-30'}})).status,400);
  assert.equal((await post({opId:'bad-days',collection:'repeats',id:'r2',patch:{days:'789'}})).status,400);
  assert.equal((await post({opId:'bill-every',collection:'bills',id:'b2',patch:{every:2}})).status,200);
  assert.equal((await post({opId:'bill-every-0',collection:'bills',id:'b2',patch:{every:0}})).status,400);

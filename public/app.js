@@ -218,6 +218,7 @@ const monthLabel = m => `${MONTHS[Number(m.slice(5, 7)) - 1]}${m.slice(0, 4) ===
 function repeatKind(r) {
   if (!r) return 'none';
   if (r.monthDay > 0) return 'monthly';
+  if (r.weeks > 1 && r.days) return 'biweekly';
   if (r.days === '0123456') return 'daily';
   if (r.days === '12345') return 'weekdays';
   return r.days ? 'custom' : 'none';
@@ -227,6 +228,7 @@ function repeatLabel(r) {
   if (kind === 'monthly') return `Todo mês, dia ${r.monthDay}`;
   if (kind === 'daily') return 'Todo dia';
   if (kind === 'weekdays') return 'Dias úteis';
+  if (kind === 'biweekly') return `A cada ${r.weeks} semanas: ${[...r.days].map(d => WEEK[d].slice(0, 3).toLowerCase()).join(', ')}`;
   if (r.days.length === 1) return `${['0', '6'].includes(r.days) ? 'Todo' : 'Toda'} ${WEEK[r.days].toLowerCase()}`;
   return [...r.days].map(d => WEEK[d].slice(0, 3)).join(', ');
 }
@@ -623,6 +625,8 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
   const isMeeting = source ? !!source.meeting : !!asMeeting;
   const kind = repeatKind(repeat);
   const days = repeat && kind !== 'monthly' ? repeat.days : '12345';
+  // An every-other-week repeat counts its weeks from the first occurrence.
+  const firstDay = kind === 'biweekly' && repeat.start ? repeat.start : presetDate || today();
   const title = editingRepeat ? 'Editar repetição' : task ? 'Editar tarefa' : isMeeting ? 'Nova reunião' : 'Nova tarefa';
   const dayOptions = Array.from({length: 31}, (_, i) => `<option value="${i + 1}" ${(repeat?.monthDay || Number(today().slice(8, 10))) === i + 1 ? 'selected' : ''}>${i + 1}</option>`).join('');
   openSheet(`<form class="n-form" id="task-form">${sheetTop(title)}
@@ -635,9 +639,10 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       <label class="n-opt"><span data-time-label>Horário</span><input type="time" name="time" value="${esc(source?.time || presetTime || '')}"></label>
       <label class="n-opt" data-end-only>Fim<input type="time" name="end" value="${esc(source?.time || presetTime ? meetingEnd({time: source?.time || presetTime, end: source?.end}) : '')}"></label>
       <label class="n-opt" data-repeat-only>Repetir<select name="rule">
-        ${[['none', 'Não repete'], ['daily', 'Todo dia'], ['weekdays', 'Dias úteis'], ['custom', 'Dias escolhidos'], ['monthly', 'Todo mês']].filter(([v]) => !editingRepeat || v !== 'none').map(([v, l]) => `<option value="${v}" ${v === kind ? 'selected' : ''}>${l}</option>`).join('')}
+        ${[['none', 'Não repete'], ['daily', 'Todo dia'], ['weekdays', 'Dias úteis'], ['custom', 'Dias escolhidos'], ['biweekly', 'A cada 2 semanas'], ['monthly', 'Todo mês']].filter(([v]) => !editingRepeat || v !== 'none').map(([v, l]) => `<option value="${v}" ${v === kind ? 'selected' : ''}>${l}</option>`).join('')}
       </select></label>
       <fieldset class="n-days" data-days><legend class="n-sr">Dias da semana</legend>${[0, 1, 2, 3, 4, 5, 6].map(d => `<label><input type="checkbox" name="day" value="${d}" ${days.includes(String(d)) ? 'checked' : ''}><span aria-label="${WEEK[d]}">${WEEK_INITIAL[d]}</span></label>`).join('')}</fieldset>
+      <label class="n-opt" data-first-day>A partir de<input type="date" name="start" value="${firstDay}"></label>
       <label class="n-opt" data-month-day>Dia do mês<select name="monthDay">${dayOptions}</select></label>
     </div>
     ${task || editingRepeat ? `<div class="n-sheet-actions">${repeat && !editingRepeat ? '<button type="button" class="n-btn n-gray" data-stop-repeat>Parar de repetir</button>' : ''}${editingRepeat ? '<button type="button" class="n-btn n-gray n-danger" data-stop-repeat>Parar de repetir</button>' : '<button type="button" class="n-btn n-gray n-danger" data-delete>Excluir tarefa</button>'}</div>` : ''}
@@ -651,7 +656,8 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       $('[data-later-only]', form).hidden = chosen !== 'later';
       // A task on another day happens once; repeating starts from Hoje.
       $('[data-repeat-only]', form).hidden = !repeats;
-      $('[data-days]', form).hidden = !repeats || !['daily', 'weekdays', 'custom'].includes(rule);
+      $('[data-days]', form).hidden = !repeats || !['daily', 'weekdays', 'custom', 'biweekly'].includes(rule);
+      $('[data-first-day]', form).hidden = !repeats || rule !== 'biweekly';
       $('[data-month-day]', form).hidden = !repeats || rule !== 'monthly';
       const timed = !!form.elements.time.value;
       $('[data-end-only]', form).hidden = !timed;
@@ -669,11 +675,15 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       update();
     });
     form.elements.rule.addEventListener('change', () => {
-      const preset = {daily: '0123456', weekdays: '12345'}[form.elements.rule.value];
+      const rule = form.elements.rule.value;
+      let preset = {daily: '0123456', weekdays: '12345'}[rule];
+      // Every other week usually means one day: start from the chosen first day's weekday.
+      if (rule === 'biweekly' && [...form.elements.day].filter(b => b.checked).length !== 1) preset = String(weekday(form.elements.start.value || today()));
       if (preset) for (const box of form.elements.day) box.checked = preset.includes(box.value);
       update();
     });
     $('[data-days]', form).addEventListener('change', () => {
+      if (form.elements.rule.value === 'biweekly') return;
       const chosen = [...form.elements.day].filter(b => b.checked).map(b => b.value).join('');
       form.elements.rule.value = chosen === '0123456' ? 'daily' : chosen === '12345' ? 'weekdays' : 'custom';
     });
@@ -695,6 +705,14 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       const rule = form.elements.rule.value;
       const chosen = [...form.elements.day].filter(b => b.checked).map(b => b.value).join('');
       const wantsRepeat = onToday && (rule === 'monthly' || (rule !== 'none' && chosen));
+      let start = '';
+      if (wantsRepeat && rule === 'biweekly') {
+        const from = form.elements.start.value;
+        if (!from) { toast('Escolha a partir de quando repete.'); return form.elements.start.focus(); }
+        // Anchor on the first chosen weekday from that date on.
+        start = from;
+        while (!chosen.includes(String(weekday(start)))) start = addDays(start, 1);
+      }
       const ops = [];
       let rid = repeatId || task?.repeat || '';
       let template = null;
@@ -703,7 +721,7 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
         rid = '';
       } else if (wantsRepeat) {
         rid ||= uid();
-        template = {text: value, section: sectionId, time, end, days: rule === 'monthly' ? '' : chosen, monthDay: rule === 'monthly' ? Number(form.elements.monthDay.value) : 0, meeting};
+        template = {text: value, section: sectionId, time, end, days: rule === 'monthly' ? '' : chosen, monthDay: rule === 'monthly' ? Number(form.elements.monthDay.value) : 0, weeks: start ? 2 : 1, start, meeting};
         ops.push({collection: 'repeats', id: rid, patch: template});
       } else if (rid) {
         ops.push({collection: 'repeats', id: rid, patch: {deleted: true}});
