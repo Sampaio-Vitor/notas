@@ -574,3 +574,22 @@ body[data-layout="desktop"] .n-float { left: var(--side); right: 0; bottom: 24px
 body[data-layout="desktop"] .n-toast { bottom: 28px; left: calc(50% + var(--side) / 2); }
 body[data-layout="desktop"]:has(.d-actbar) .n-toast { bottom: 86px; }
 body[data-layout="desktop"] .n-group-h .n-link { font-size: 13px; min-height: 0; }
+
+/* ---------- Pull from backlog (new-task sheet) ---------- */
+/* Deliberately quiet: gray text, no count, so a full backlog does not nag. */
+.n-pull { display: flex; flex-direction: column; gap: 10px; margin-top: -6px; }
+.n-pull[hidden], .n-pick[hidden] { display: none; }
+.n-pull-link { align-self: center; color: var(--secondary); font-size: 15px; min-height: 44px; padding: 0 12px; }
+.n-form.is-picking > :not(.n-pick) { display: none; }
+.n-pick { display: flex; flex-direction: column; gap: 12px; }
+.n-pick-search { width: 100%; background: var(--group-2); border: 0; border-radius: 10px; padding: 10px 12px; font-size: 16px; color: var(--text); }
+.n-pick-h { font-size: 13px; font-weight: 400; color: var(--secondary); text-transform: uppercase; letter-spacing: .03em; margin: 4px 4px 6px; }
+.n-pick-list, .n-pick-list .n-row { background: var(--group-2); }
+.n-pick-row { width: 100%; text-align: left; color: inherit; }
+.n-pick-row[hidden], [data-bl-group][hidden] { display: none; }
+.n-pick-row .n-text { padding: 12px 0; min-height: 0; }
+.n-pick-list > .n-row + .n-row::before { content: ""; position: absolute; top: 0; left: 50px; right: 0; height: .5px; background: var(--line); }
+.n-pick-list > .n-plain + .n-plain::before { left: 34px; }
+.n-pick-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.n-pick-x { color: var(--secondary); min-width: 44px; min-height: 44px; margin-right: -12px; }
+.n-pick-cta { position: sticky; bottom: calc(-24px - env(safe-area-inset-bottom)); margin: 4px -16px calc(-24px - env(safe-area-inset-bottom)); padding: 10px 16px calc(24px + env(safe-area-inset-bottom)); background: var(--group); }

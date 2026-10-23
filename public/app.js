@@ -628,6 +628,8 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
   // An every-other-week repeat counts its weeks from the first occurrence.
   const firstDay = kind === 'biweekly' && repeat.start ? repeat.start : presetDate || today();
   const title = editingRepeat ? 'Editar repetição' : task ? 'Editar tarefa' : isMeeting ? 'Nova reunião' : 'Nova tarefa';
+  // A new task can also pull tasks from the backlog onto the chosen day.
+  const pullable = !task && !editingRepeat && tabPrefs(state).backlog && backlog().length > 0;
   const dayOptions = Array.from({length: 31}, (_, i) => `<option value="${i + 1}" ${(repeat?.monthDay || Number(today().slice(8, 10))) === i + 1 ? 'selected' : ''}>${i + 1}</option>`).join('');
   openSheet(`<form class="n-form" id="task-form">${sheetTop(title)}
     <textarea name="text" rows="1" required maxlength="10000" placeholder="Tarefa" aria-label="Tarefa" ${task || editingRepeat ? '' : 'autofocus'}>${esc(source?.text || '')}</textarea>
@@ -645,6 +647,7 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       <label class="n-opt" data-first-day>A partir de<input type="date" name="start" value="${firstDay}"></label>
       <label class="n-opt" data-month-day>Dia do mês<select name="monthDay">${dayOptions}</select></label>
     </div>
+    ${pullable ? `<div class="n-pull" data-pull-only><button type="button" class="n-pull-link" data-bl-open>ou trazer do backlog ›</button><div class="n-list n-pick-list" data-bl-chosen hidden></div></div>${pickPane()}` : ''}
     ${task || editingRepeat ? `<div class="n-sheet-actions">${repeat && !editingRepeat ? '<button type="button" class="n-btn n-gray" data-stop-repeat>Parar de repetir</button>' : ''}${editingRepeat ? '<button type="button" class="n-btn n-gray n-danger" data-stop-repeat>Parar de repetir</button>' : '<button type="button" class="n-btn n-gray n-danger" data-delete>Excluir tarefa</button>'}</div>` : ''}
   </form>`, () => {
     const form = $('#task-form'), text = form.elements.text;
@@ -654,6 +657,8 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       const chosen = whenValue(), rule = form.elements.rule.value, repeats = chosen === 'today';
       $('[data-today-only]', form).hidden = chosen === 'backlog';
       $('[data-later-only]', form).hidden = chosen !== 'later';
+      const pull = $('[data-pull-only]', form);
+      if (pull) pull.hidden = chosen === 'backlog';
       // A task on another day happens once; repeating starts from Hoje.
       $('[data-repeat-only]', form).hidden = !repeats;
       $('[data-days]', form).hidden = !repeats || !['daily', 'weekdays', 'custom', 'biweekly'].includes(rule);
@@ -688,16 +693,31 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       form.elements.rule.value = chosen === '0123456' ? 'daily' : chosen === '12345' ? 'weekdays' : 'custom';
     });
     form.addEventListener('change', e => { if (e.target.name === 'when') update(); });
+    const picked = pullable ? pickBacklog(form, () => {
+      const when = whenValue(), date = form.elements.date.value;
+      return when === 'today' ? 'hoje' : date > today() ? dayShort(date) : '';
+    }) : new Set();
     update();
     form.onsubmit = e => {
       e.preventDefault();
       const value = text.value.trim();
-      if (!value) return text.focus();
+      const pulling = whenValue() !== 'backlog' && picked.size > 0;
+      if (!value && !pulling) return text.focus();
       const sectionId = form.elements.section.value || lastSection();
       localStorage.setItem('notas-section', sectionId);
       const chosenWhen = whenValue(), onToday = chosenWhen === 'today', dated = chosenWhen !== 'backlog';
       const later = chosenWhen === 'later' ? form.elements.date.value : '';
       if (chosenWhen === 'later' && !(later > today())) { toast('Escolha uma data a partir de amanhã.'); return form.elements.date.focus(); }
+      // Pulled tasks keep their own section and time; only the day changes.
+      const pulled = pulling ? [...picked].filter(id => state.tasks[id] && !state.tasks[id].deleted && state.tasks[id].date === '') : [];
+      const pullOps = pulled.map(id => ({collection: 'tasks', id, patch: {date: later || today(), done: false}}));
+      const pullMessage = pulled.length ? `${pulled.length === 1 ? '1 tarefa trazida' : `${pulled.length} tarefas trazidas`} para ${later ? nextDayLabel(later) : 'hoje'}.` : '';
+      if (!value) {
+        commitMany(pullOps);
+        closeSheet();
+        if (pullMessage) toast(pullMessage);
+        return;
+      }
       const time = dated ? form.elements.time.value : '';
       const meeting = dated && form.elements.meeting.checked;
       const end = time ? form.elements.end.value || meetingEnd({time}) : '';
@@ -743,9 +763,9 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
           if (!onToday && tab !== 'backlog') message = 'Tarefa salva no backlog.';
         }
       }
-      commitMany(ops);
+      commitMany([...ops, ...pullOps]);
       closeSheet();
-      if (message) toast(message);
+      if (message || pullMessage) toast([message, pullMessage].filter(Boolean).join(' '));
     };
     $('[data-delete]', form)?.addEventListener('click', () => { commit('tasks', task.id, {deleted: true}); closeSheet(); });
     $('[data-stop-repeat]', form)?.addEventListener('click', () => {
@@ -754,6 +774,76 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       commitMany(ops); closeSheet(); toast('A tarefa não vai mais se repetir.');
     });
   });
+}
+
+// The backlog list the new-task sheet slides to. Only the explicit link opens it.
+function pickPane() {
+  const tasks = backlog(), known = new Set(sections().map(s => s.id));
+  const groups = [...sections().map(s => [s.name, tasks.filter(t => t.section === s.id)]), ['Outras', tasks.filter(t => !known.has(t.section))]].filter(([, list]) => list.length);
+  return `<div class="n-pick" data-bl-pane hidden>
+    <div class="n-sheet-top"><button type="button" class="n-link" data-bl-back>‹ Voltar</button><h2>Backlog</h2><span></span></div>
+    <input type="search" class="n-pick-search" placeholder="Buscar" aria-label="Buscar no backlog" autocomplete="off" data-bl-search>
+    ${groups.map(([name, list]) => `<section data-bl-group><h3 class="n-pick-h">${esc(name)}</h3><div class="n-list n-pick-list">${list.map(t => `<button type="button" class="n-row n-pick-row" data-bl-pick="${t.id}" data-key="${esc(itemKey(t.text))}" aria-pressed="false"><span class="n-check" aria-hidden="true">${ICONS.check}</span><span class="n-text">${esc(t.text)}</span></button>`).join('')}</div></section>`).join('')}
+    <p class="n-note" data-bl-none hidden>Nada encontrado.</p>
+    <div class="n-pick-cta"><button type="button" class="n-btn n-yellow n-wide" data-bl-bring disabled>Selecione tarefas</button></div>
+  </div>`;
+}
+// Wires the backlog pane inside the task form; returns the set of task ids brought back.
+// Marks are drafts until "Trazer"; Voltar drops them.
+function pickBacklog(form, destination) {
+  const picked = new Set(), marking = new Set(), dialog = $('#sheet');
+  const pane = $('[data-bl-pane]', form), chosen = $('[data-bl-chosen]', form), cta = $('[data-bl-bring]', form), search = $('[data-bl-search]', form);
+  const slide = (to, name) => { if (!matchMedia('(prefers-reduced-motion: reduce)').matches) form.animate([{transform: `translateX(${name === 'in' ? 24 : -24}px)`, opacity: .4}, {transform: 'none', opacity: 1}], {duration: 260, easing: 'cubic-bezier(.2, .8, .2, 1)'}); dialog.scrollTop = 0; to?.focus({preventScroll: true}); };
+  const label = () => {
+    const where = destination();
+    cta.disabled = !marking.size;
+    cta.textContent = !marking.size ? 'Selecione tarefas' : where ? `Trazer para ${where}` : 'Trazer';
+  };
+  const showChosen = () => {
+    chosen.hidden = !picked.size;
+    chosen.innerHTML = [...picked].map(id => state.tasks[id]).filter(Boolean).map(t => `<div class="n-row n-plain"><i class="n-pick-dot" style="background:${sectionColor(t.section)}" aria-hidden="true"></i><span class="n-text">${esc(t.text)}</span><button type="button" class="n-pick-x" data-bl-drop="${t.id}" aria-label="Tirar ${esc(t.text)}">✕</button></div>`).join('');
+    form.elements.text.required = !picked.size;
+  };
+  const open = () => {
+    marking.clear(); for (const id of picked) marking.add(id);
+    for (const row of $$('[data-bl-pick]', pane)) { const on = marking.has(row.dataset.blPick); row.classList.toggle('is-selected', on); row.setAttribute('aria-pressed', on); }
+    search.value = ''; filter(); label();
+    form.classList.add('is-picking'); pane.hidden = false;
+    slide($('[data-bl-back]', pane), 'in');
+  };
+  const close = () => { form.classList.remove('is-picking'); pane.hidden = true; slide($('[data-bl-open]', form), 'out'); };
+  const filter = () => {
+    const q = itemKey(search.value);
+    let any = false;
+    for (const group of $$('[data-bl-group]', pane)) {
+      let shown = 0;
+      for (const row of $$('[data-bl-pick]', group)) { row.hidden = !!q && !row.dataset.key.includes(q); if (!row.hidden) shown++; }
+      group.hidden = !shown; any ||= shown > 0;
+    }
+    $('[data-bl-none]', pane).hidden = any;
+  };
+  search.addEventListener('input', filter);
+  form.addEventListener('keydown', e => {
+    if (!form.classList.contains('is-picking')) return;
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+    else if (e.key === 'Enter' && e.target === search) e.preventDefault();
+  });
+  form.addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    const d = b.dataset;
+    if ('blOpen' in d) open();
+    else if ('blBack' in d) close();
+    else if (d.blPick) {
+      marking.has(d.blPick) ? marking.delete(d.blPick) : marking.add(d.blPick);
+      b.classList.toggle('is-selected', marking.has(d.blPick)); b.setAttribute('aria-pressed', marking.has(d.blPick)); label();
+    } else if ('blBring' in d) { picked.clear(); for (const id of marking) picked.add(id); showChosen(); close(); }
+    else if (d.blDrop) { picked.delete(d.blDrop); showChosen(); }
+    else return;
+    // These buttons belong to the sheet; keep the app-wide click handler out of it.
+    e.stopPropagation();
+  });
+  return picked;
 }
 
 function parseMoney(input) {
