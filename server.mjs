@@ -5,7 +5,7 @@ import {resolve, dirname, extname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {randomBytes, randomUUID, createHmac, timingSafeEqual} from 'node:crypto';
 import {generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse} from '@simplewebauthn/server';
-import {initialState, apply, rollover, migrate, normalize, itemKey, itemId, listed, billOpsConflict} from './public/model.js';
+import {initialState, apply, rollover, migrate, normalize, itemKey, itemId, listed, billOpsConflict, cardBillOps} from './public/model.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '127.0.0.1', port = Number(process.env.PORT || 4329);
@@ -105,8 +105,11 @@ function today() { return new Intl.DateTimeFormat('en-CA', {timeZone: process.en
 function ensureDay() {
   for (const u of users) {
     const state = spaces.get(u.id), ops = rollover(state, today());
-    if (!ops.length) continue;
     for (const op of ops) apply(state, op);
+    // Bills linked to a card follow it, including the ones the rollover just created.
+    const cardOps = cardBillOps(state);
+    for (const op of cardOps) apply(state, op);
+    if (!ops.length && !cardOps.length) continue;
     persist(u.id); notify(u.id);
   }
 }
@@ -132,6 +135,41 @@ function commit(ops, space, who) {
   } catch (e) { db.exec('ROLLBACK'); throw e; }
   notify(space);
 }
+
+// ---------- Credit card bills ----------
+// The finance app answers only inside the Docker network shared with
+// it, with a read-only token. Its cards go to FINANCE_USER's space (default: first person).
+const finance = process.env.FINANCE_URL && process.env.FINANCE_TOKEN ? {
+  url: process.env.FINANCE_URL.replace(/\/+$/, ''), token: process.env.FINANCE_TOKEN,
+  user: userById(process.env.FINANCE_USER || owner.id) || (() => { throw Error(`FINANCE_USER deve ser um destes: ${users.map(u => u.id).join(', ')}`); })(),
+} : null;
+const cents = value => Math.round(Number(value) * 100);
+// One record per card, with its bills by due month (amounts in cents, like every bill here).
+function cardRecord(card) {
+  const bills = {};
+  for (const b of card.bills || []) if (/^\d{4}-\d{2}$/.test(b.month) && /^\d{4}-\d{2}-\d{2}$/.test(b.due_date) && Number.isFinite(cents(b.amount))) bills[b.month] = {amount: Math.max(0, cents(b.amount)), due: b.due_date, status: b.status};
+  return {name: String(card.name || 'Cartão').slice(0, 200), bills};
+}
+let financeError = '';
+async function syncCards() {
+  try {
+    const res = await fetch(`${finance.url}/api/integrations/credit-card-bills`, {headers: {Authorization: `Bearer ${finance.token}`}, signal: AbortSignal.timeout(15000)});
+    if (!res.ok) throw Error(`HTTP ${res.status}`);
+    const {cards} = await res.json();
+    const current = spaces.get(finance.user.id).cards;
+    const ops = cards.map(card => ({opId: `finance-${randomUUID()}`, collection: 'cards', id: String(card.id), patch: cardRecord(card)}))
+      .filter(op => JSON.stringify({...current[op.id], id: undefined}) !== JSON.stringify({...op.patch, id: undefined}));
+    if (ops.length) commit(ops, finance.user.id, {user: finance.user.id, agent: 'financas'});
+    ensureDay();
+    if (financeError) console.log('faturas: sincronização voltou');
+    financeError = '';
+  } catch (e) {
+    // Logged once per kind of failure, not every ten minutes.
+    if (e.message !== financeError) console.error('faturas: não foi possível ler o app de finanças:', e.message);
+    financeError = e.message;
+  }
+}
+if (finance) { syncCards(); setInterval(syncCards, 10 * 60000).unref(); }
 
 // ---------- MCP ----------
 // Agents (a shopping assistant) reach only the shopping list, never anyone's personal space.
@@ -255,6 +293,8 @@ const schema = {
   days: {date: 'string', reviewed: 'boolean'},
   months: {month: 'string'},
   prefs: {reunioes: 'boolean', backlog: 'boolean', compras: 'boolean', contas: 'boolean'},
+  // `cards` is written only by the server, from the finance app.
+  cardLinks: {card: 'string'},
   shopping: {text: 'string', done: 'boolean', listed: 'boolean', added: 'number', by: 'string'},
 };
 // Field formats beyond the type check; time and a meeting's end are optional (empty string).
@@ -273,6 +313,7 @@ const formats = {
   start: v => formats.date(v),
   date: v => v === '' || (/^\d{4}-\d{2}-\d{2}$/.test(v) && Number.isFinite(Date.parse(`${v}T12:00:00Z`)) && new Date(`${v}T12:00:00Z`).toISOString().slice(0, 10) === v),
   order: v => Number.isInteger(v), weekday: v => Number.isInteger(v) && v <= 6,
+  card: v => /^\d{0,18}$/.test(v),
 };
 function validate(op) {
   if (!op || typeof op.opId !== 'string' || op.opId.length > 100 || !Object.hasOwn(schema, op.collection)) return false;

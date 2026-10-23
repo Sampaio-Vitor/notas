@@ -1,7 +1,7 @@
 // Shared by server and client: state shape, patch application and the
 // daily/monthly rollover. Every change is a patch {collection,id,patch}.
 // `shopping` lives in the shared space; everything else is per person.
-export const COLLECTIONS = ['sections', 'tasks', 'repeats', 'bills', 'billRules', 'days', 'months', 'meetings', 'shopping', 'prefs'];
+export const COLLECTIONS = ['sections', 'tasks', 'repeats', 'bills', 'billRules', 'days', 'months', 'meetings', 'shopping', 'prefs', 'cards', 'cardLinks'];
 
 export const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 export const weekday = date => new Date(`${date}T12:00:00`).getDay();
@@ -119,6 +119,29 @@ export function billOpsConflict(state, ops) {
     || (op.expectedBillRule !== undefined && op.expectedBillRule !== ruleFingerprint(billRule(state, {id: op.id}))));
 }
 const billOp = (id, patch, collection = 'bills') => ({collection, id, patch});
+
+// ---- Credit cards, read by the server from the finance app. `cards[id].bills[month]` is
+// {amount (cents), due 'YYYY-MM-DD', status 'open'|'closed'|'paid'}, by due month.
+// `cardLinks[chain].card` ties a series of bills to a card; '' unlinks it.
+export const linkedCard = (state, bill) => { const id = state.cardLinks?.[billChain(bill.id)]?.card; return id ? state.cards?.[id] : undefined; };
+export const cardBill = (state, bill, month = bill.month) => bill.calcMode === 'occurrence' ? undefined : linkedCard(state, bill)?.bills?.[month];
+// What a series will charge in `month`: the card's bill when there is one, otherwise its own rule.
+function projectedBill(state, rule, month) {
+  const snapshot = billSnapshot({...rule, excluded: ''}, month), card = cardBill(state, rule, month);
+  return card ? {...snapshot, amount: card.amount} : snapshot;
+}
+// Unpaid bills of a linked series follow the card's amount and due day. Paying stays manual,
+// so a paid bill keeps the value it was paid with.
+export function cardBillOps(state) {
+  const ops = [];
+  for (const b of live(state, 'bills').filter(b => !b.done)) {
+    const card = cardBill(state, b);
+    if (!card) continue;
+    const patch = {amount: card.amount, due: Number(card.due.slice(8, 10)), cardStatus: card.status};
+    if (Object.entries(patch).some(([k, v]) => b[k] !== v)) ops.push(billOp(b.id, patch));
+  }
+  return ops;
+}
 function occurrence(state, rule, month) {
   const chain = billChain(rule.id);
   return Object.values(state.bills || {}).find(b => billChain(b.id) === chain && b.month === month);
@@ -136,7 +159,7 @@ export function billCatalog(state, month) {
     let next = nextBillMonth(rule, month);
     // Skip exceptions already paid, removed or skipped; there is no fixed month horizon.
     while (occurrence(state, rule, next)) next = shiftMonth(next, billEvery(rule));
-    return {...billFields(rule), ...billSnapshot({...rule, excluded: ''}, next), id: `${chain}-${next}`, month: next, done: false, recurring: true, virtual: true};
+    return {...billFields(rule), ...projectedBill(state, rule, next), id: `${chain}-${next}`, month: next, done: false, recurring: true, virtual: true};
   });
   rows.push(...live(state, 'bills').filter(b => b.repeat === false && !b.done).map(b => ({...b, recurring: false})));
   return rows.sort((a, b) => a.month.localeCompare(b.month) || (a.due || 32) - (b.due || 32) || a.text.localeCompare(b.text, 'pt-BR'));
@@ -200,7 +223,7 @@ export function scheduledBills(state, from, count = 12) {
       const gap = monthGap(m.month, b.month), existing = occurrence(state, b, m.month);
       if (existing) {
         if (!existing.deleted && !existing.skipped && !existing.done) { m.items.push({...existing, every}); m.total += existing.amount || 0; }
-      } else if (gap > 0 && gap % every === 0) { const snapshot = billSnapshot({...b, excluded: ''}, m.month); m.items.push({id: b.id, text: b.text, ...snapshot, month: m.month, due: b.due || 0, every}); m.total += snapshot.amount; }
+      } else if (gap > 0 && gap % every === 0) { const snapshot = projectedBill(state, b, m.month); m.items.push({id: b.id, text: b.text, ...snapshot, month: m.month, due: b.due || 0, every}); m.total += snapshot.amount; }
     }
   }
   for (const m of months) m.items.sort((x, y) => (x.due || 99) - (y.due || 99) || x.text.localeCompare(y.text, 'pt-BR'));
@@ -240,7 +263,7 @@ export function rollover(state, date) {
       const every = billEvery(b);
       const gap = monthGap(month, b.month);
       if (gap <= 0 || gap % every !== 0 || occurrence(state, b, month)) continue;
-      add('bills', `${billChain(b.id)}-${month}`, {text: b.text, ...billSnapshot({...b, excluded: ''}, month), due: b.due || 0, month, done: false, repeat: true, ...(every > 1 ? {every} : {})});
+      add('bills', `${billChain(b.id)}-${month}`, {text: b.text, ...projectedBill(state, b, month), due: b.due || 0, month, done: false, repeat: true, ...(every > 1 ? {every} : {})});
     }
   }
   return ops;

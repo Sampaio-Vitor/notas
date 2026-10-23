@@ -12,6 +12,10 @@ services:
       APP_PASSWORD: ${APP_PASSWORD:-}
       # Agentes no /mcp, só com a lista de compras: id:token, separados por vírgula.
       MCP_TOKENS: ${MCP_TOKENS:-}
+      # Faturas de cartão do app de finanças, pela rede notas-financas (vazio = desligado).
+      FINANCE_URL: ${FINANCE_URL:-}
+      FINANCE_TOKEN: ${FINANCE_TOKEN:-}
+      FINANCE_USER: ${FINANCE_USER:-}
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Defina PUBLIC_ORIGIN com o endereço HTTPS}
       # A porta só existe no loopback: todo acesso passa pelo proxy HTTPS local.
       TRUST_PROXY: "1"
@@ -24,5 +28,11 @@ services:
       start_period: 5s
     volumes:
       - notas-data:/app/data
+    networks: [default, financas]
+networks:
+  # Só o notas e o backend do app de finanças: o MySQL e o Redis dele ficam de fora.
+  # Criada por este projeto; o financial-system a usa como externa.
+  financas:
+    name: notas-financas
 volumes:
   notas-data:
