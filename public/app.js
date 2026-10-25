@@ -515,13 +515,14 @@ function pageHistory() {
   const title = `${WEEK[weekday(date)]}, ${Number(date.slice(8, 10))}${sameMonth ? '' : ` de ${MONTHS[Number(date.slice(5, 7)) - 1]}`}`;
   const nextWeek = addDays(monday, 7);
   return {
-    html: `<div class="n-top"><button class="n-link" data-back>‹ Hoje</button><label class="n-icon" aria-label="Escolher dia">${ICONS.cal}<input type="date" class="n-hidden-input" data-pick-day value="${date}"></label></div>
+    // The header and week strip stay put; only the day's tasks scroll.
+    html: `<div class="n-day-head"><div class="n-top"><button class="n-link" data-back>‹ Hoje</button><label class="n-icon" aria-label="Escolher dia">${ICONS.cal}<input type="date" class="n-hidden-input" data-pick-day value="${date}"></label></div>
       <h1 class="n-title">${title}</h1><p class="n-sub">${!tasks.length ? 'Nenhuma tarefa neste dia' : ahead ? plural(tasks.length, 'tarefa prevista', 'tarefas previstas') : `${doneCount(tasks)} de ${tasks.length} feitas`}</p>
       <div class="n-week">
         <button class="n-week-nav" data-day="${addDays(monday, -7)}" aria-label="Semana anterior">‹</button>
         ${week.map(d => `<button class="n-day ${d === date ? 'is-selected' : ''} ${d === today() ? 'is-today' : ''}" data-day="${d}" aria-label="${esc(longDate(d))}"><small>${WEEK_INITIAL[weekday(d)]}</small><b>${Number(d.slice(8, 10))}</b><i class="${dot(d)}"></i></button>`).join('')}
         <button class="n-week-nav" data-day="${nextWeek}" aria-label="Próxima semana">›</button>
-      </div>
+      </div></div>
       ${sectionGroups(tasks, 'edit', list => ahead ? list.length : `${doneCount(list)} de ${list.length}`)}`,
     action: (() => {
       // Today and later days take new tasks and meetings; earlier days only hand back what was left.

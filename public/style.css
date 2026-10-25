@@ -166,6 +166,7 @@ body[data-float="yes"] .page[data-name="root"] .n-screen { padding-bottom: calc(
 
 /* ---------- Dias anteriores ---------- */
 .n-week { display: grid; grid-template-columns: 24px repeat(7, 1fr) 24px; align-items: center; margin-top: 16px; }
+.n-day-head { position: sticky; top: 0; z-index: 2; background: #000; margin-top: calc(-1 * env(safe-area-inset-top)); padding: env(safe-area-inset-top) 0 6px; }
 .n-week-nav { color: var(--yellow); font-size: 22px; min-height: 44px; }
 .n-week-nav:disabled { color: #3a3a3c; }
 .n-day { display: grid; justify-items: center; gap: 3px; padding: 4px 0; }
