@@ -250,9 +250,6 @@ function statusHtml() {
 
 function taskRow(t, mode = 'edit') {
   const meta = t.time || t.repeat ? `<span class="n-meta">${t.repeat ? ICONS.rep : ''}${esc(timeLabel(t))}</span>` : '';
-  if (mode === 'read') {
-    return `<div class="n-row ${t.done ? 'is-done' : ''}"><span class="n-check" aria-hidden="true">${ICONS.check}</span><span class="n-text">${esc(t.text)}</span>${meta}</div>`;
-  }
   if (mode === 'pick') {
     const on = selected.has(t.id);
     return `<div class="n-row d-pick ${on ? 'is-selected' : ''} ${cursor === t.id ? 'is-cursor' : ''}" data-row="${t.id}" data-pick="${t.id}" draggable="true"><button class="n-check n-square" data-select="${t.id}" aria-pressed="${on}" aria-label="Selecionar ${esc(t.text)}">${ICONS.check}</button><span class="n-text">${esc(t.text)}</span>${meta}</div>`;
@@ -525,7 +522,7 @@ function pageHistory() {
         ${week.map(d => `<button class="n-day ${d === date ? 'is-selected' : ''} ${d === today() ? 'is-today' : ''}" data-day="${d}" aria-label="${esc(longDate(d))}"><small>${WEEK_INITIAL[weekday(d)]}</small><b>${Number(d.slice(8, 10))}</b><i class="${dot(d)}"></i></button>`).join('')}
         <button class="n-week-nav" data-day="${nextWeek}" aria-label="Próxima semana">›</button>
       </div>
-      ${sectionGroups(tasks, date >= today() ? 'edit' : 'read', list => ahead ? list.length : `${doneCount(list)} de ${list.length}`)}`,
+      ${sectionGroups(tasks, 'edit', list => ahead ? list.length : `${doneCount(list)} de ${list.length}`)}`,
     action: (() => {
       // Today and later days take new tasks and meetings; earlier days only hand back what was left.
       if (date >= today()) return `<button class="n-quick" data-new-on-day>${ICONS.plus}<span>Nova tarefa</span></button>`;
@@ -626,8 +623,10 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
   const editingRepeat = !!repeatId;
   const source = editingRepeat ? repeat : task;
   const section = source?.section && state.sections[source.section] && !state.sections[source.section].deleted ? source.section : lastSection();
-  // today, later (a chosen future day) or backlog
-  const initialWhen = editingRepeat ? 'today' : task ? (task.date === '' ? 'backlog' : task.date > today() ? 'later' : 'today') : when;
+  // A task from a past day can stay there, or move to today, a future day or the backlog.
+  const pastDay = !editingRepeat && task?.date && task.date < today() ? task.date : '';
+  // day (its past day), today, later (a chosen future day) or backlog
+  const initialWhen = editingRepeat ? 'today' : pastDay ? 'day' : task ? (task.date === '' ? 'backlog' : task.date > today() ? 'later' : 'today') : when;
   const isBacklog = initialWhen === 'backlog';
   const isMeeting = source ? !!source.meeting : !!asMeeting;
   const kind = repeatKind(repeat);
@@ -641,7 +640,7 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
   openSheet(`<form class="n-form" id="task-form">${sheetTop(title)}
     <textarea name="text" rows="1" required maxlength="10000" placeholder="Tarefa" aria-label="Tarefa" ${task || editingRepeat ? '' : 'autofocus'}>${esc(source?.text || '')}</textarea>
     <fieldset class="n-fieldset"><legend>Seção</legend><div class="n-chips">${sections().map(s => `<label class="n-chip"><input type="radio" name="section" value="${s.id}" ${s.id === section ? 'checked' : ''}><span>${esc(s.name)}</span></label>`).join('')}</div></fieldset>
-    ${editingRepeat ? '' : `<fieldset class="n-seg"><legend class="n-sr">Quando</legend>${[['today', 'Hoje'], ['later', 'Outro dia'], ['backlog', 'Backlog']].filter(([v]) => v !== 'backlog' || tabPrefs(state).backlog || isBacklog).map(([v, l]) => `<label><input type="radio" name="when" value="${v}" ${v === initialWhen ? 'checked' : ''}><span>${l}</span></label>`).join('')}</fieldset>`}
+    ${editingRepeat ? '' : `<fieldset class="n-seg"><legend class="n-sr">Quando</legend>${[...(pastDay ? [['day', cap(dayShort(pastDay).replace(/ de \S+$/, ''))]] : []), ['today', 'Hoje'], ['later', 'Outro dia'], ['backlog', 'Backlog']].filter(([v]) => v !== 'backlog' || tabPrefs(state).backlog || isBacklog).map(([v, l]) => `<label><input type="radio" name="when" value="${v}" ${v === initialWhen ? 'checked' : ''}><span>${l}</span></label>`).join('')}</fieldset>`}
     <div class="n-opts" data-today-only>
       <label class="n-opt" data-later-only>Data<input type="date" name="date" min="${addDays(today(), 1)}" value="${initialWhen === 'later' ? task?.date || presetDate : addDays(today(), 1)}"></label>
       <label class="n-opt">Reunião<input type="checkbox" class="n-switch" name="meeting" ${isMeeting ? 'checked' : ''}></label>
@@ -661,7 +660,8 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
     autosize(text); text.addEventListener('input', () => autosize(text));
     const whenValue = () => editingRepeat ? 'today' : form.elements.when.value;
     const update = () => {
-      const chosen = whenValue(), rule = form.elements.rule.value, repeats = chosen === 'today';
+      // Moved off its past day, the task happens once there.
+      const chosen = whenValue(), rule = form.elements.rule.value, repeats = chosen === 'day' || (chosen === 'today' && !pastDay);
       $('[data-today-only]', form).hidden = chosen === 'backlog';
       $('[data-later-only]', form).hidden = chosen !== 'later';
       const pull = $('[data-pull-only]', form);
@@ -712,7 +712,8 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       if (!value && !pulling) return text.focus();
       const sectionId = form.elements.section.value || lastSection();
       localStorage.setItem('notas-section', sectionId);
-      const chosenWhen = whenValue(), onToday = chosenWhen === 'today', dated = chosenWhen !== 'backlog';
+      const chosenWhen = whenValue(), onDay = chosenWhen === 'day', onToday = chosenWhen === 'today', dated = chosenWhen !== 'backlog';
+      const leavingPast = !!pastDay && !onDay;
       const later = chosenWhen === 'later' ? form.elements.date.value : '';
       if (chosenWhen === 'later' && !(later > today())) { toast('Escolha uma data a partir de amanhã.'); return form.elements.date.focus(); }
       // Pulled tasks keep their own section and time; only the day changes.
@@ -731,7 +732,7 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       if (end && end <= time) { toast('O fim precisa ser depois do início.'); return form.elements.end.focus(); }
       const rule = form.elements.rule.value;
       const chosen = [...form.elements.day].filter(b => b.checked).map(b => b.value).join('');
-      const wantsRepeat = onToday && (rule === 'monthly' || (rule !== 'none' && chosen));
+      const wantsRepeat = (onDay || (onToday && !pastDay)) && (rule === 'monthly' || (rule !== 'none' && chosen));
       let start = '';
       if (wantsRepeat && rule === 'biweekly') {
         const from = form.elements.start.value;
@@ -743,7 +744,7 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       const ops = [];
       let rid = repeatId || task?.repeat || '';
       let template = null;
-      if (later && task?.repeat) {
+      if ((later || leavingPast) && task?.repeat) {
         // Moving one occurrence to another day leaves the repeat itself alone.
         rid = '';
       } else if (wantsRepeat) {
@@ -754,11 +755,12 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
         ops.push({collection: 'repeats', id: rid, patch: {deleted: true}});
         rid = '';
       }
-      let message = later && later !== task?.date ? `Agendada para ${nextDayLabel(later)}.` : '';
+      let message = later && later !== task?.date ? `Agendada para ${nextDayLabel(later)}.` : leavingPast ? (onToday ? 'Tarefa movida para hoje.' : 'Tarefa movida para o backlog.') : '';
       if (!editingRepeat) {
         if (task) {
-          const date = later || (onToday ? (task.date && task.date <= today() ? task.date : today()) : '');
-          ops.push({collection: 'tasks', id: task.id, patch: {text: value, section: sectionId, time, end, meeting, repeat: rid, date}});
+          const date = later || (onDay ? pastDay : onToday ? today() : '');
+          // Brought from a past day, it starts over as not done.
+          ops.push({collection: 'tasks', id: task.id, patch: {text: value, section: sectionId, time, end, meeting, repeat: rid, date, ...(leavingPast ? {done: false} : {})}});
         } else if (later) {
           ops.push({collection: 'tasks', id: uid(), patch: {text: value, section: sectionId, time, end, meeting, repeat: '', date: later, done: false}});
         } else if (wantsRepeat && !repeatsOn(template, today())) {
