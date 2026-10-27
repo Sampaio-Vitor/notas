@@ -146,6 +146,27 @@ function occurrence(state, rule, month) {
   const chain = billChain(rule.id);
   return Object.values(state.bills || {}).find(b => billChain(b.id) === chain && b.month === month);
 }
+// A future occurrence the rollover has not created yet, addressed as '<chain>-YYYY-MM'.
+// Editing or deleting it stores the record ahead of time, as the catalog already does.
+export function virtualBill(state, id) {
+  const month = /-(\d{4}-(?:0[1-9]|1[0-2]))$/.exec(String(id))?.[1];
+  if (!month || `${billChain(id)}-${month}` !== id || state.bills[id]) return;
+  const rule = billRule(state, {id});
+  if (!rule || rule.deleted || rule.repeat === false || state.months?.[month]) return;
+  const gap = monthGap(month, rule.month);
+  if (gap <= 0 || gap % billEvery(rule) || occurrence(state, rule, month)) return;
+  return {...billFields(rule), ...projectedBill(state, rule, month), id, month, done: false, virtual: true};
+}
+// Moving the rule to a later month would drop the projected months before it; store them
+// first, as the rollover would, so ending or changing the series from there keeps them.
+function gapOps(state, rule, month) {
+  const ops = [], every = billEvery(rule), chain = billChain(rule.id);
+  for (let m = shiftMonth(rule.month, every); m < month; m = shiftMonth(m, every)) {
+    if (state.months?.[m] || occurrence(state, rule, m)) continue;
+    ops.push(billOp(`${chain}-${m}`, {text: rule.text, ...projectedBill(state, rule, m), due: rule.due || 0, month: m, done: false, repeat: true, ...(every > 1 ? {every} : {})}));
+  }
+  return ops;
+}
 export function nextBillMonth(rule, from) {
   return shiftMonth(rule.month, Math.max(1, Math.ceil(monthGap(from, rule.month) / billEvery(rule))) * billEvery(rule));
 }
@@ -176,6 +197,7 @@ export function editBillOps(state, bill, patch, scope = 'one', expectedRule) {
   if (recurring && !state.billRules?.[chain]) ops.push(billOp(chain, ruleFields(rule), 'billRules'));
   if (!recurring && patch.repeat === true) ops.push(billOp(chain, ruleFields({...billFields(bill), ...patch, month: bill.month}), 'billRules'));
   if (scope === 'future' && recurring) {
+    ops.push(...gapOps(state, rule, bill.month));
     ops.push(billOp(chain, ruleFields({...billFields(rule), ...patch, month: bill.month}), 'billRules'));
     for (const b of Object.values(state.bills).filter(b => !b.deleted && (!b.skipped || b.skipReason === 'frequency') && billChain(b.id) === chain && b.month > bill.month && !b.done)) {
       const updated = {...b, ...patch, month: b.month, excluded: b.excluded || ''};
@@ -194,6 +216,7 @@ export function deleteBillOps(state, bill, scope = 'one') {
   const recurring = rule && !rule.deleted && rule.repeat !== false;
   if (bill.virtual && !recurring) return [];
   if (recurring) {
+    if (scope === 'future') ops.push(...gapOps(state, rule, bill.month));
     if (!state.billRules?.[chain] || scope === 'future') ops.push(billOp(chain, {...ruleFields(rule), ...(scope === 'future' ? {repeat: false} : {})}, 'billRules'));
     if (scope === 'future') for (const b of Object.values(state.bills).filter(b => !b.deleted && (!b.skipped || b.skipReason === 'frequency') && billChain(b.id) === chain && b.month > bill.month && !b.done)) ops.push(billOp(b.id, {skipped: true, skipReason: 'removed'}));
   }
@@ -223,9 +246,12 @@ export function scheduledBills(state, from, count = 12) {
       const gap = monthGap(m.month, b.month), existing = occurrence(state, b, m.month);
       if (existing) {
         if (!existing.deleted && !existing.skipped && !existing.done) { m.items.push({...existing, every}); m.total += existing.amount || 0; }
-      } else if (gap > 0 && gap % every === 0) { const snapshot = projectedBill(state, b, m.month); m.items.push({id: b.id, text: b.text, ...snapshot, month: m.month, due: b.due || 0, every}); m.total += snapshot.amount; }
+      } else if (gap > 0 && gap % every === 0) { const snapshot = projectedBill(state, b, m.month); m.items.push({id: `${billChain(b.id)}-${m.month}`, text: b.text, ...snapshot, month: m.month, due: b.due || 0, every, virtual: true}); m.total += snapshot.amount; }
     }
   }
+  // Months already stored for a series that ended later on (ended from a future month).
+  const active = new Set(repeatingBills(state).map(b => billChain(b.id)));
+  for (const m of months) for (const b of live(state, 'bills').filter(b => b.month === m.month && !b.done && b.repeat !== false && !active.has(billChain(b.id)))) { m.items.push({...b, every: billEvery(b)}); m.total += b.amount || 0; }
   for (const m of months) m.items.sort((x, y) => (x.due || 99) - (y.due || 99) || x.text.localeCompare(y.text, 'pt-BR'));
   return months;
 }

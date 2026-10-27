@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {initialState, apply, rollover, live, repeatingBills, scheduledBills, billCatalog, editBillOps, deleteBillOps, undoBillOps, billRule, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills} from '../public/model.js';
+import {initialState, apply, rollover, live, repeatingBills, scheduledBills, billCatalog, virtualBill, editBillOps, deleteBillOps, undoBillOps, billRule, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills} from '../public/model.js';
 
 const run = (state, ops) => ops.forEach(op => apply(state, op));
 function fixture() {
@@ -161,6 +161,59 @@ test('formulário de ocorrência projetada não reativa série encerrada em outr
   run(s, deleteBillOps(s, s.bills['internet-2026-10'], 'future'));
   assert.deepEqual(editBillOps(s, next, value, 'future'), []);
   assert.deepEqual(deleteBillOps(s, next), []);
+});
+
+test('conta prevista de um mês futuro pode ser editada só naquele mês', () => {
+  const s = fixture();
+  const projected = scheduledBills(s, '2027-01', 1)[0].items[0];
+  assert.equal(projected.id, 'internet-2027-01');
+  const jan = virtualBill(s, projected.id);
+  assert.equal(jan.virtual, true);
+  assert.equal(jan.amount, 11990);
+  run(s, editBillOps(s, jan, {...value, amount: 50000}));
+  assert.equal(s.bills['internet-2027-01'].amount, 50000);
+  assert.equal(virtualBill(s, 'internet-2027-01'), undefined);
+  assert.deepEqual(scheduledBills(s, '2026-11', 3).map(m => m.total), [11990, 11990, 50000]);
+  run(s, rollover(s, '2027-01-01'));
+  assert.equal(live(s, 'bills').filter(b => b.month === '2027-01').length, 1);
+});
+
+test('editar este e os próximos a partir de um mês futuro mantém os meses anteriores', () => {
+  const s = fixture();
+  run(s, editBillOps(s, virtualBill(s, 'internet-2027-01'), {...value, amount: 50000}, 'future'));
+  assert.deepEqual(scheduledBills(s, '2026-11', 4).map(m => m.total), [11990, 11990, 50000, 50000]);
+  assert.equal(billRule(s, {id: 'internet'}).month, '2027-01');
+});
+
+test('excluir uma conta prevista encerra a série dali em diante, sem apagar os meses antes', () => {
+  const s = fixture();
+  const jan = virtualBill(s, 'internet-2027-01');
+  run(s, deleteBillOps(s, jan, 'future'));
+  assert.deepEqual(scheduledBills(s, '2026-11', 4).map(m => m.total), [11990, 11990, 0, 0]);
+  assert.equal(repeatingBills(s).length, 0);
+  assert.equal(virtualBill(s, 'internet-2027-03'), undefined);
+  run(s, rollover(s, '2026-11-01'));
+  assert.equal(live(s, 'bills').filter(b => b.month === '2026-11').length, 1);
+});
+
+test('excluir só a conta paga do mês passado deixa a série editável no futuro', () => {
+  const s = fixture();
+  s.bills['internet-2026-10'].done = true;
+  run(s, deleteBillOps(s, s.bills['internet-2026-10']));
+  const jan = virtualBill(s, 'internet-2027-01');
+  assert.ok(jan);
+  run(s, deleteBillOps(s, jan, 'future'));
+  assert.deepEqual(scheduledBills(s, '2027-01', 3).map(m => m.total), [0, 0, 0]);
+});
+
+test('só existe conta virtual em mês da série ainda não gerado', () => {
+  const s = fixture();
+  s.bills['internet-2026-10'].every = 2;
+  assert.equal(virtualBill(s, 'internet-2026-11'), undefined);
+  assert.ok(virtualBill(s, 'internet-2026-12'));
+  assert.equal(virtualBill(s, 'internet-2026-10'), undefined);
+  assert.equal(virtualBill(s, 'nada-2026-12'), undefined);
+  assert.equal(virtualBill(s, 'internet'), undefined);
 });
 
 const therapy = {id: 'therapy', text: 'Terapia', calcMode: 'occurrence', unitAmount: 20000, weekdays: '4', starts: '2026-10-01', excluded: '', repeat: true, every: 1, due: 30, month: '2026-10'};
