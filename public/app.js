@@ -264,10 +264,12 @@ function taskRow(t, mode = 'edit') {
 }
 
 function sectionGroups(tasks, mode, count) {
+  // In edit mode each group takes dropped tasks; empty sections only show up mid-drag.
+  const drop = mode === 'edit';
   return sections().map(s => {
     const list = byDone(tasks.filter(t => t.section === s.id));
-    if (!list.length) return '';
-    return `<section><div class="n-group-h"><h2>${dot(s.id)}${esc(s.name)}</h2><span>${count(list)}</span></div><div class="n-list">${list.map(t => taskRow(t, mode)).join('')}</div></section>`;
+    if (!list.length) return drop ? `<section class="n-drop-only" data-drop-section="${s.id}"><div class="n-group-h"><h2>${dot(s.id)}${esc(s.name)}</h2></div><div class="n-list"><p class="n-drop-hint">Solte aqui</p></div></section>` : '';
+    return `<section${drop ? ` data-drop-section="${s.id}"` : ''}><div class="n-group-h"><h2>${dot(s.id)}${esc(s.name)}</h2><span>${count(list)}</span></div><div class="n-list">${list.map(t => taskRow(t, mode)).join('')}</div></section>`;
   }).join('') + orphanGroup(tasks, mode, count);
 }
 // Tasks whose section no longer exists still need to be reachable.
@@ -1393,6 +1395,96 @@ document.addEventListener('keydown', e => {
   saveSectionOrder(ids);
   requestAnimationFrame(() => $(`[data-drag="${handle.dataset.drag}"]`)?.focus());
 });
+
+// Hoje and the calendar day: drag a task onto another section. A touch has to press and
+// hold first, so a quick swipe still scrolls; the mouse drags as soon as it moves.
+let rowDrag = null;
+function moveToSection(id, section) {
+  const shown = projected(id), t = shown || state.tasks[id];
+  if (!t || t.section === section) return;
+  const {id: _, ...fields} = t, before = t.section;
+  const ops = [{collection: 'tasks', id, patch: shown ? {...fields, section} : {section}}];
+  // As in the form: today's occurrence takes its repeat along to the next days.
+  const r = t.date === today() && t.repeat && state.repeats[t.repeat];
+  if (r && !r.deleted) ops.push({collection: 'repeats', id: t.repeat, patch: {section}});
+  const undo = [{collection: 'tasks', id, patch: {section: before}}, ...(ops[1] ? [{...ops[1], patch: {section: r.section}}] : [])];
+  commitMany(ops);
+  toast(`Movida para ${sectionName(section)}.`, () => commitMany(undo));
+}
+function startRowDrag() {
+  const d = rowDrag;
+  if (!d || d.active) return;
+  d.active = true; dragging = true; suppressClick = true;
+  navigator.vibrate?.(10);
+  const box = d.row.getBoundingClientRect();
+  d.dx = d.x - box.left; d.dy = d.y - box.top;
+  d.ghost = d.row.cloneNode(true);
+  d.ghost.classList.add('n-ghost');
+  Object.assign(d.ghost.style, {width: `${box.width}px`, left: `${box.left}px`, top: `${box.top}px`});
+  document.body.append(d.ghost);
+  d.row.classList.add('is-lifted');
+  document.body.classList.add('is-moving-task');
+  d.scroller = d.row.closest('.page-content');
+  const tick = () => {
+    if (rowDrag !== d) return;
+    // Near the top or bottom edge, scroll so far-away sections can be reached.
+    const area = d.scroller?.getBoundingClientRect();
+    if (area) {
+      const edge = 70, up = area.top + edge - d.y, down = d.y - (area.bottom - edge);
+      if (up > 0 || down > 0) { d.scroller.scrollTop += up > 0 ? -Math.ceil(up / 6) : Math.ceil(down / 6); aimRowDrag(); }
+    }
+    requestAnimationFrame(tick);
+  };
+  aimRowDrag();
+  requestAnimationFrame(tick);
+}
+function aimRowDrag() {
+  const d = rowDrag;
+  d.ghost.style.transform = `translate(${d.x - d.dx - parseFloat(d.ghost.style.left)}px, ${d.y - d.dy - parseFloat(d.ghost.style.top)}px)`;
+  const groups = $$('[data-drop-section]', d.scroller || document).filter(g => g.offsetParent);
+  // The group under the finger, or the closest one when between groups.
+  const distance = g => { const b = g.getBoundingClientRect(); return d.y < b.top ? b.top - d.y : d.y > b.bottom ? d.y - b.bottom : 0; };
+  const target = groups.reduce((best, g) => !best || distance(g) < distance(best) ? g : best, null);
+  d.target = target && target.dataset.dropSection !== d.from ? target.dataset.dropSection : null;
+  groups.forEach(g => g.classList.toggle('is-target', g.dataset.dropSection === d.target));
+}
+function endRowDrag(e) {
+  const d = rowDrag;
+  if (!d || (e && e.pointerId !== d.pointer)) return;
+  clearTimeout(d.timer);
+  rowDrag = null;
+  if (!d.active) return;
+  d.ghost.remove();
+  d.row.classList.remove('is-lifted');
+  document.body.classList.remove('is-moving-task');
+  $$('[data-drop-section].is-target').forEach(g => g.classList.remove('is-target'));
+  dragging = false;
+  if (d.target && e?.type === 'pointerup') moveToSection(d.id, d.target);
+  else render();
+}
+document.addEventListener('pointerdown', e => {
+  if (rowDrag || e.button !== 0) return;
+  const row = e.target.closest('[data-drop-section] .n-row[data-row]');
+  if (!row || e.target.closest('.n-check')) return;
+  rowDrag = {id: row.dataset.row, row, from: row.closest('[data-drop-section]').dataset.dropSection, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, pointer: e.pointerId, mouse: e.pointerType === 'mouse', active: false};
+  if (!rowDrag.mouse) rowDrag.timer = setTimeout(startRowDrag, 380);
+});
+document.addEventListener('pointermove', e => {
+  const d = rowDrag;
+  if (!d || e.pointerId !== d.pointer) return;
+  d.x = e.clientX; d.y = e.clientY;
+  if (d.active) { aimRowDrag(); return; }
+  if (Math.hypot(d.x - d.x0, d.y - d.y0) > (d.mouse ? 5 : 8)) {
+    // The mouse starts dragging; a finger that moves before the hold is scrolling.
+    if (d.mouse) startRowDrag(); else { clearTimeout(d.timer); rowDrag = null; }
+  }
+});
+document.addEventListener('pointerup', endRowDrag);
+document.addEventListener('pointercancel', endRowDrag);
+// Once a held row is moving, the finger must not scroll the page or open a menu.
+document.addEventListener('touchmove', e => { if (rowDrag?.active) e.preventDefault(); }, {passive: false});
+document.addEventListener('contextmenu', e => { if (rowDrag && !desktop()) e.preventDefault(); });
+addEventListener('keydown', e => { if (e.key === 'Escape' && rowDrag) endRowDrag(); });
 
 // Compras: Return adds the item and keeps the keyboard open for the next one.
 document.addEventListener('submit', e => {
