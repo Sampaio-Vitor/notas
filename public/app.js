@@ -510,23 +510,24 @@ function defaultHistoryDate() {
   return dates.at(-1) || addDays(today(), -1);
 }
 
+// The calendar's week, also the drop targets when a task is dragged to another day.
+function weekStrip(monday, selectedDate) {
+  const mark = d => { const list = dayTasks(d); return !list.length ? 'is-none' : list.every(t => t.done) ? 'is-all' : ''; };
+  const days = Array.from({length: 7}, (_, i) => addDays(monday, i));
+  return `<button class="n-week-nav" data-day="${addDays(monday, -7)}" data-week-step="-7" aria-label="Semana anterior">‹</button>
+    ${days.map(d => `<button class="n-day ${d === selectedDate ? 'is-selected' : ''} ${d === today() ? 'is-today' : ''}" data-day="${d}" aria-label="${esc(longDate(d))}"><small>${WEEK_INITIAL[weekday(d)]}</small><b>${Number(d.slice(8, 10))}</b><i class="${mark(d)}"></i></button>`).join('')}
+    <button class="n-week-nav" data-day="${addDays(monday, 7)}" data-week-step="7" aria-label="Próxima semana">›</button>`;
+}
+
 function pageHistory() {
   const date = historyDate, tasks = dayTasks(date), ahead = date > today();
-  const monday = addDays(date, -((weekday(date) + 6) % 7));
-  const week = Array.from({length: 7}, (_, i) => addDays(monday, i));
-  const dot = d => { const list = dayTasks(d); return !list.length ? 'is-none' : list.every(t => t.done) ? 'is-all' : ''; };
   const sameMonth = date.slice(0, 7) === today().slice(0, 7);
   const title = `${WEEK[weekday(date)]}, ${Number(date.slice(8, 10))}${sameMonth ? '' : ` de ${MONTHS[Number(date.slice(5, 7)) - 1]}`}`;
-  const nextWeek = addDays(monday, 7);
   return {
     // The header and week strip stay put; only the day's tasks scroll.
     html: `<div class="n-day-head"><div class="n-top"><button class="n-link" data-back>‹ Hoje</button><label class="n-icon" aria-label="Escolher dia">${ICONS.cal}<input type="date" class="n-hidden-input" data-pick-day value="${date}"></label></div>
       <h1 class="n-title">${title}</h1><p class="n-sub">${!tasks.length ? 'Nenhuma tarefa neste dia' : ahead ? plural(tasks.length, 'tarefa prevista', 'tarefas previstas') : `${doneCount(tasks)} de ${tasks.length} feitas`}</p>
-      <div class="n-week">
-        <button class="n-week-nav" data-day="${addDays(monday, -7)}" aria-label="Semana anterior">‹</button>
-        ${week.map(d => `<button class="n-day ${d === date ? 'is-selected' : ''} ${d === today() ? 'is-today' : ''}" data-day="${d}" aria-label="${esc(longDate(d))}"><small>${WEEK_INITIAL[weekday(d)]}</small><b>${Number(d.slice(8, 10))}</b><i class="${dot(d)}"></i></button>`).join('')}
-        <button class="n-week-nav" data-day="${nextWeek}" aria-label="Próxima semana">›</button>
-      </div></div>
+      <div class="n-week">${weekStrip(mondayOf(date), date)}</div></div>
       ${sectionGroups(tasks, 'edit', list => ahead ? list.length : `${doneCount(list)} de ${list.length}`)}`,
     action: (() => {
       // Today and later days take new tasks and meetings; earlier days only hand back what was left.
@@ -1401,8 +1402,9 @@ document.addEventListener('keydown', e => {
   requestAnimationFrame(() => $(`[data-drag="${handle.dataset.drag}"]`)?.focus());
 });
 
-// Hoje and the calendar day: drag a task onto another section. A touch has to press and
-// hold first, so a quick swipe still scrolls; the mouse drags as soon as it moves.
+// Hoje and the calendar day: drag a task onto another section, or up past the week strip
+// onto another day. A touch has to press and hold first, so a quick swipe still scrolls;
+// the mouse drags as soon as it moves.
 let rowDrag = null;
 function moveToSection(id, section) {
   const shown = projected(id), t = shown || state.tasks[id];
@@ -1416,6 +1418,19 @@ function moveToSection(id, section) {
   commitMany(ops);
   toast(`Movida para ${sectionName(section)}.`, () => commitMany(undo));
 }
+// "hoje", "amanhã", "qui, 5 de nov"
+const dropDayLabel = date => date === today() ? 'hoje' : date === addDays(today(), 1) ? 'amanhã' : dayShort(date);
+function moveToDay(id, date) {
+  const shown = projected(id), t = shown || state.tasks[id];
+  if (!t || t.date === date) return render();
+  const {id: _, ...fields} = t;
+  // As in the form: a repeat's occurrence moved to another day leaves the repeat behind,
+  // and a task brought from a past day starts over as not done.
+  const patch = {date, ...(t.repeat ? {repeat: ''} : {}), ...(t.date < today() && date >= today() ? {done: false} : {})};
+  const undo = {date: t.date, ...(t.repeat ? {repeat: t.repeat} : {}), ...('done' in patch ? {done: !!t.done} : {})};
+  commitMany([{collection: 'tasks', id, patch: shown ? {...fields, ...patch} : patch}]);
+  toast(`Movida para ${dropDayLabel(date)}.`, () => commitMany([{collection: 'tasks', id, patch: undo}]));
+}
 function startRowDrag() {
   const d = rowDrag;
   if (!d || d.active) return;
@@ -1425,17 +1440,36 @@ function startRowDrag() {
   d.dx = d.x - box.left; d.dy = d.y - box.top;
   d.ghost = d.row.cloneNode(true);
   d.ghost.classList.add('n-ghost');
-  Object.assign(d.ghost.style, {width: `${box.width}px`, left: `${box.left}px`, top: `${box.top}px`});
+  d.ghost.classList.toggle('is-mouse', d.mouse);
+  // The ghost sits at the pointer; its offset is a margin, so compacting can animate it.
+  d.ghost.style.setProperty('--w', `${box.width}px`);
+  d.ghost.style.setProperty('--mx', `${-d.dx}px`);
+  d.ghost.style.setProperty('--my', `${-d.dy}px`);
   document.body.append(d.ghost);
   d.row.classList.add('is-lifted');
   document.body.classList.add('is-moving-task');
   d.scroller = d.row.closest('.page-content');
+  d.date = (projected(d.id) || state.tasks[d.id])?.date || '';
+  // The calendar day has its week strip on top. Hoje has none, so one slides in for the drag.
+  d.strip = $('.n-week', d.scroller || document);
+  if (!d.strip && d.date && d.scroller) {
+    const area = (d.row.closest('.d-main') || d.scroller).getBoundingClientRect();
+    d.dock = document.createElement('div');
+    d.dock.className = 'n-drop-dock';
+    Object.assign(d.dock.style, {left: `${area.left}px`, width: `${area.width}px`, top: `${Math.max(0, d.scroller.getBoundingClientRect().top)}px`});
+    d.dock.innerHTML = `<p>Arraste até um dia</p><div class="n-week">${weekStrip(mondayOf(d.date), d.date)}</div>`;
+    document.body.append(d.dock);
+    d.strip = $('.n-week', d.dock);
+  }
+  d.monday = mondayOf(d.date || today());
   const tick = () => {
     if (rowDrag !== d) return;
-    // Near the top or bottom edge, scroll so far-away sections can be reached.
+    // Near the top or bottom edge, scroll so far-away sections can be reached. Above the
+    // week strip's limit the task is aiming at a day, so the list holds still.
     const area = d.scroller?.getBoundingClientRect();
-    if (area) {
-      const edge = 70, up = area.top + edge - d.y, down = d.y - (area.bottom - edge);
+    if (area && !d.compact) {
+      const top = d.strip ? d.limit : area.top;
+      const edge = 70, up = top + edge - d.y, down = d.y - (area.bottom - edge);
       if (up > 0 || down > 0) { d.scroller.scrollTop += up > 0 ? -Math.ceil(up / 6) : Math.ceil(down / 6); aimRowDrag(); }
     }
     requestAnimationFrame(tick);
@@ -1445,26 +1479,58 @@ function startRowDrag() {
 }
 function aimRowDrag() {
   const d = rowDrag;
-  d.ghost.style.transform = `translate(${d.x - d.dx - parseFloat(d.ghost.style.left)}px, ${d.y - d.dy - parseFloat(d.ghost.style.top)}px)`;
+  d.ghost.style.transform = `translate(${d.x}px, ${d.y}px)`;
+  // Dragged up past the week strip, the task shrinks into a chip and aims at a day.
+  d.limit = d.strip ? d.strip.getBoundingClientRect().bottom + 24 : -Infinity;
+  const compact = d.y < d.limit;
+  if (compact !== d.compact) { d.compact = compact; if (compact) navigator.vibrate?.(5); }
+  d.ghost.classList.toggle('is-compact', compact);
+  // Near a side of the screen the chip slides in so it stays whole.
+  const left = d.mouse ? d.x + 14 : d.x - 88, right = left + 176, top = d.mouse ? d.y + 12 : d.y - 66;
+  d.ghost.style.setProperty('--cx', `${Math.max(0, 8 - left) + Math.min(0, innerWidth - 8 - right)}px`);
+  d.ghost.style.setProperty('--cy', `${Math.max(0, 4 - top)}px`);
+  d.strip?.classList.toggle('is-aiming', compact);
+  d.dock?.classList.toggle('is-near', compact);
   const groups = $$('[data-drop-section]', d.scroller || document).filter(g => g.offsetParent);
   // The group under the finger, or the closest one when between groups.
   const distance = g => { const b = g.getBoundingClientRect(); return d.y < b.top ? b.top - d.y : d.y > b.bottom ? d.y - b.bottom : 0; };
-  const target = groups.reduce((best, g) => !best || distance(g) < distance(best) ? g : best, null);
+  const target = compact ? null : groups.reduce((best, g) => !best || distance(g) < distance(best) ? g : best, null);
   d.target = target && target.dataset.dropSection !== d.from ? target.dataset.dropSection : null;
   groups.forEach(g => g.classList.toggle('is-target', g.dataset.dropSection === d.target));
+  // The day (or ‹ ›) closest to the pointer across; the task's own day takes nothing.
+  const centre = b => { const r = b.getBoundingClientRect(); return Math.abs(r.left + r.width / 2 - d.x); };
+  const near = compact ? $$('[data-day]', d.strip).reduce((best, b) => !best || centre(b) < centre(best) ? b : best, null) : null;
+  const step = near?.dataset.weekStep ? Number(near.dataset.weekStep) : 0;
+  d.day = near && !step && near.dataset.day !== d.date ? near.dataset.day : null;
+  if (d.strip) $$('.n-day', d.strip).forEach(b => b.classList.toggle('is-drop', b.dataset.day === d.day));
+  // Held over ‹ or ›, the strip turns a week every half second.
+  if (step !== d.step) {
+    clearTimeout(d.pageTimer);
+    d.step = step;
+    if (step) d.pageTimer = setTimeout(() => {
+      if (rowDrag !== d) return;
+      d.monday = addDays(d.monday, step); d.step = 0;
+      d.strip.innerHTML = weekStrip(d.monday, d.date);
+      navigator.vibrate?.(5);
+      aimRowDrag();
+    }, 550);
+  }
 }
 function endRowDrag(e) {
   const d = rowDrag;
   if (!d || (e && e.pointerId !== d.pointer)) return;
   clearTimeout(d.timer);
+  clearTimeout(d.pageTimer);
   rowDrag = null;
   if (!d.active) return;
   d.ghost.remove();
+  d.dock?.remove();
   d.row.classList.remove('is-lifted');
   document.body.classList.remove('is-moving-task');
   $$('[data-drop-section].is-target').forEach(g => g.classList.remove('is-target'));
   dragging = false;
-  if (d.target && e?.type === 'pointerup') moveToSection(d.id, d.target);
+  if (d.day && e?.type === 'pointerup') moveToDay(d.id, d.day);
+  else if (d.target && e?.type === 'pointerup') moveToSection(d.id, d.target);
   else render();
 }
 document.addEventListener('pointerdown', e => {

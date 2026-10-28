@@ -107,8 +107,27 @@ body[data-float="yes"] .page[data-name="root"] .n-screen { padding-bottom: calc(
 .is-dragging { background: var(--group-2); z-index: 1; box-shadow: 0 6px 18px #000a; }
 
 /* Moving a task to another section: the row lifts and follows the finger or mouse. */
-.n-ghost { position: fixed; z-index: 50; margin: 0; pointer-events: none; border-radius: 12px; background: var(--group-2); box-shadow: 0 10px 28px #000c; opacity: .96; }
+.n-ghost {
+  position: fixed; left: 0; top: 0; z-index: 50; width: var(--w); margin: var(--my) 0 0 var(--mx); pointer-events: none;
+  border-radius: 12px; background: var(--group-2); box-shadow: 0 10px 28px #000c; opacity: .96;
+  transition: width .18s ease, margin .18s ease, border-radius .18s ease, box-shadow .18s ease;
+}
 .n-ghost::before { display: none; }
+/* Past the week strip it shrinks into a chip: above the finger, beside the mouse pointer. */
+.n-ghost.is-compact { width: 176px; margin: calc(-66px + var(--cy, 0px)) 0 0 calc(-88px + var(--cx, 0px)); min-height: 40px; border-radius: 20px; box-shadow: 0 0 0 1.5px var(--yellow), 0 10px 28px #000c; }
+.n-ghost.is-mouse.is-compact { margin: calc(12px + var(--cy, 0px)) 0 0 calc(14px + var(--cx, 0px)); }
+.n-ghost.is-compact .n-check, .n-ghost.is-compact .n-meta { display: none; }
+.n-ghost.is-compact .n-text { min-height: 40px; padding: 10px 0; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Hoje has no week strip: one slides down over the top while a task is dragged. */
+.n-drop-dock { position: fixed; z-index: 40; pointer-events: none; padding: calc(env(safe-area-inset-top) + 8px) 16px 6px; background: #000000eb; -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); border-bottom: .5px solid var(--line); animation: n-dock-in .2s ease-out; }
+body[data-layout="desktop"] .n-drop-dock { padding: 10px 24px 6px; }
+.n-drop-dock p { margin: 0; text-align: center; font-size: 13px; color: var(--secondary); transition: color .12s; }
+.n-drop-dock.is-near p { color: var(--yellow); }
+.n-drop-dock .n-week { margin-top: 4px; }
+@keyframes n-dock-in { from { transform: translateY(-100%); opacity: 0; } }
+.n-day b { transition: transform .12s, background-color .12s; }
+.n-week.is-aiming .n-day.is-selected b { background: #3a3a3c; color: var(--secondary); }
+.n-week .n-day.is-drop b { background: var(--yellow); color: #000; font-weight: 700; transform: scale(1.18); }
 .n-row.is-lifted { opacity: .3; }
 body.is-moving-task, body.is-moving-task * { cursor: grabbing !important; }
 .n-drop-only { display: none; }
