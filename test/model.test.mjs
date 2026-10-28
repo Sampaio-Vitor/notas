@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {initialState, apply, rollover, migrate, repeatsOn, lastPending, pendingOn, carryOps, scheduledTasks, sortedSections, itemKey, itemId, listed, tabPrefs, shiftMonth, scheduledBills, repeatingBills, parseQuickTask, meetingLanes, meetingEnd, onAgenda} from '../public/model.js';
+import {initialState, apply, rollover, migrate, repeatsOn, lastPending, pendingOn, carryOps, scheduledTasks, overdueTasks, sortedSections, itemKey, itemId, listed, tabPrefs, shiftMonth, scheduledBills, repeatingBills, parseQuickTask, meetingLanes, meetingEnd, onAgenda} from '../public/model.js';
 
 const run = (s, ops) => ops.forEach(op => apply(s, op));
 
@@ -270,4 +270,24 @@ test('tarefa com horário entra na agenda e a repetição leva início e fim', (
   assert.equal(s.tasks['r-r-2026-10-19'].end, '08:00');
   assert.equal(s.tasks['r-r-2026-10-19'].meeting, undefined);
   assert.equal(s.tasks['r-u-2026-10-19'].end, undefined);
+});
+
+test('ficaram para trás: só tarefas avulsas de dias passados que não foram feitas', () => {
+  const s = initialState();
+  const add = (id, patch) => apply(s, {collection: 'tasks', id, patch: {text: id, section: 'pessoal', time: '', done: false, ...patch}});
+  add('luz', {date: '2026-10-24'});
+  add('feita', {date: '2026-10-24', done: true});
+  add('malhar', {date: '2026-10-27', repeat: 'r1'});
+  add('reuniao', {date: '2026-10-26', meeting: true});
+  add('hoje', {date: '2026-10-28'});
+  add('backlog', {date: ''});
+  add('antiga', {date: '2026-10-20'});
+  // Carried forward and still not done: only the latest copy counts.
+  add('conta', {date: '2026-10-25'});
+  add('c-conta-2026-10-26', {date: '2026-10-26', from: 'conta'});
+  // Carried and done on the later day: nothing is left behind.
+  add('pao', {date: '2026-10-22'});
+  add('c-pao-2026-10-23', {date: '2026-10-23', from: 'pao', done: true});
+  apply(s, {collection: 'tasks', id: 'apagada', patch: {text: 'x', section: 'pessoal', date: '2026-10-21', done: false, deleted: true}});
+  assert.deepEqual(overdueTasks(s, '2026-10-28').map(t => t.id), ['c-conta-2026-10-26', 'luz', 'antiga']);
 });

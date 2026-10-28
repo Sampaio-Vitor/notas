@@ -320,6 +320,15 @@ export function scheduledTasks(state, today) {
     .sort((a, b) => a.date.localeCompare(b.date) || (a.time || '99').localeCompare(b.time || '99'));
 }
 
+// One-off tasks planned for an earlier day and never done, newest first. Repeats and
+// meetings are left behind, and a task carried forward counts only on its latest day.
+export function overdueTasks(state, today) {
+  const tasks = live(state, 'tasks'), latest = new Map();
+  for (const t of tasks) if (t.date && !(latest.get(origin(t)) >= t.date)) latest.set(origin(t), t.date);
+  return tasks.filter(t => t.date && t.date < today && !t.done && !t.repeat && !t.meeting && latest.get(origin(t)) === t.date)
+    .sort((a, b) => b.date.localeCompare(a.date) || (a.time || '99').localeCompare(b.time || '99'));
+}
+
 export function pendingOn(state, date) {
   return live(state, 'tasks').filter(t => t.date === date && !t.done && !t.repeat && !t.meeting && !carried(state, t));
 }

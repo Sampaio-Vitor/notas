@@ -3,7 +3,7 @@ import {createNavigation} from './navigation.js';
 const report = message => { try { navigator.sendBeacon?.('/api/client-log', new Blob([JSON.stringify({message})], {type: 'application/json'})); } catch {} };
 addEventListener('error', e => report(`${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`));
 addEventListener('unhandledrejection', e => report(`promise: ${e.reason?.stack || e.reason}`));
-import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, virtualBill, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, billChain, linkedCard, cardBill, parseQuickTask, meetingLanes, meetingEnd, onAgenda, toMinutes, fromMinutes} from './model.js';
+import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, overdueTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, virtualBill, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, billChain, linkedCard, cardBill, parseQuickTask, meetingLanes, meetingEnd, onAgenda, toMinutes, fromMinutes} from './model.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -40,6 +40,8 @@ function nextDayLabel(date) {
 }
 
 const ICONS = {
+  prev: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M12.5 4.5 7 10l5.5 5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  next: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7.5 4.5 13 10l-5.5 5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   cal: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4.5" width="14" height="12.5" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M3 8.5h14M7 2.5v4M13 2.5v4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
   rep: '<svg viewBox="0 0 16 16" aria-label="Repete"><path d="M3 7a5 5 0 0 1 8.6-3.4L13 5M13 2v3h-3M13 9a5 5 0 0 1-8.6 3.4L3 11M3 14v-3h3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   check: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -64,7 +66,7 @@ let passkeys = [], regOptions = null, loginOptions = null, loginOptionsError = n
 // Who is signed in. The local cache belongs to one person (`owner`); another
 // person signing in on the same device starts from a clean cache.
 let me = null, people = [], owner = null, sessionLoaded = false;
-let tab = 'hoje', billMonth = today().slice(0, 7), selecting = false, selected = new Set(), historyDate = null, sub = null, dragging = false, billsView = 'mes', openMonths = new Set();
+let tab = 'hoje', billMonth = today().slice(0, 7), selecting = false, selected = new Set(), historyDate = null, hojeDate = null, sub = null, dragging = false, billsView = 'mes', openMonths = new Set();
 let billSearch = '', billFilter = 'all';
 
 try {
@@ -174,7 +176,11 @@ const dayTasks = date => {
   return [...stored, ...live(state, 'repeats').filter(r => repeatsOn(r, date) && !state.tasks[occurrenceId(r.id, date)]).map(r => ({id: occurrenceId(r.id, date), text: r.text, section: r.section, time: r.time || '', date, done: false, repeat: r.id, ...(r.time ? {end: r.end || ''} : {}), ...(r.meeting ? {meeting: true} : {})}))];
 };
 // A repeat's occurrence on a day not reached yet exists only on screen; touching it stores it.
-const projected = id => !state.tasks[id] && historyDate ? dayTasks(historyDate).find(t => t.id === id) : null;
+const projected = id => {
+  if (state.tasks[id]) return null;
+  for (const date of [historyDate, tab === 'hoje' && hojeDate]) { const t = date && dayTasks(date).find(t => t.id === id); if (t) return t; }
+  return null;
+};
 // With the Agenda tab on, meetings live there and leave Hoje. Other tasks with a
 // time show in both.
 const meetingsApart = () => tabPrefs(state).reunioes;
@@ -182,6 +188,7 @@ const todayTasks = () => tasksOn(today()).filter(t => !(meetingsApart() && t.mee
 const todayMeetings = () => tasksOn(today()).filter(onAgenda);
 const backlog = () => live(state, 'tasks').filter(t => t.date === '');
 const scheduled = () => scheduledTasks(state, today());
+const overdue = () => overdueTasks(state, today());
 // "qui, 5 de nov"
 const dayShort = date => `${WEEK[weekday(date)].slice(0, 3).toLowerCase()}, ${Number(date.slice(8, 10))} de ${MONTHS[Number(date.slice(5, 7)) - 1].slice(0, 3)}`;
 const byTime = list => [...list].sort((a, b) => (a.time ? 0 : 1) - (b.time ? 0 : 1) || (a.time || '').localeCompare(b.time || ''));
@@ -248,8 +255,9 @@ function statusHtml() {
   return `<p class="n-status">${queue.length ? `Sem conexão. ${queue.length === 1 ? '1 alteração será enviada' : `${queue.length} alterações serão enviadas`} quando voltar.` : 'Sem conexão.'}</p>`;
 }
 
-function taskRow(t, mode = 'edit') {
-  const meta = t.time || t.repeat ? `<span class="n-meta">${t.repeat ? ICONS.rep : ''}${esc(timeLabel(t))}</span>` : '';
+// A late note (the day a task was planned for) takes the place of its time.
+function taskRow(t, mode = 'edit', late = '') {
+  const meta = late ? `<span class="n-meta is-late">${esc(late)}</span>` : t.time || t.repeat ? `<span class="n-meta">${t.repeat ? ICONS.rep : ''}${esc(timeLabel(t))}</span>` : '';
   if (mode === 'pick') {
     const on = selected.has(t.id);
     return `<div class="n-row d-pick ${on ? 'is-selected' : ''} ${cursor === t.id ? 'is-cursor' : ''}" data-row="${t.id}" data-pick="${t.id}" draggable="true"><button class="n-check n-square" data-select="${t.id}" aria-pressed="${on}" aria-label="Selecionar ${esc(t.text)}">${ICONS.check}</button><span class="n-text">${esc(t.text)}</span>${meta}</div>`;
@@ -283,14 +291,36 @@ function hojeBanner() {
   return pending ? `<div class="n-banner"><p>${pending.tasks.length === 1 ? `1 tarefa ${fromDay(pending.date)} não foi feita.` : `${pending.tasks.length} tarefas ${fromDay(pending.date)} não foram feitas.`}</p><div class="n-btns"><button class="n-btn n-yellow" data-carry-last>Trazer para hoje</button><button class="n-btn n-gray" data-ignore-last>Ignorar</button></div></div>` : '';
 }
 
+// Hoje also pages to the days around it (hojeDate; null is today).
+const hojeTasks = () => hojeDate ? dayTasks(hojeDate).filter(t => !(meetingsApart() && t.meeting)) : todayTasks();
+// "Ontem", "Amanhã", "Quinta, 30" (with the month when it is another one)
+function dayTitle(date) {
+  if (date === addDays(today(), -1)) return 'Ontem';
+  if (date === addDays(today(), 1)) return 'Amanhã';
+  return `${WEEK[weekday(date)]}, ${Number(date.slice(8, 10))}${date.slice(0, 7) === today().slice(0, 7) ? '' : ` de ${MONTHS[Number(date.slice(5, 7)) - 1]}`}`;
+}
+const dayArrows = cls => `<button class="${cls}" data-shift-day="-1" aria-label="Dia anterior" title="Dia anterior (←)">${ICONS.prev}</button><button class="${cls}" data-shift-day="1" aria-label="Próximo dia" title="Próximo dia (→)">${ICONS.next}</button>`;
+function newTaskOn(date) { taskSheet(date > today() ? {when: 'later', date} : {when: 'today'}); }
+
+function viewOtherDay(date) {
+  const tasks = hojeTasks(), ahead = date > today();
+  const body = tasks.length
+    ? sectionGroups(tasks, 'edit', list => ahead ? list.length : `${doneCount(list)} de ${list.length}`)
+    : `<div class="n-empty"><p>${ahead ? 'Nada previsto para este dia.' : 'Nada neste dia.'}</p></div>`;
+  const count = !tasks.length ? '' : ahead ? plural(tasks.length, 'prevista', 'previstas') : `${doneCount(tasks)} de ${tasks.length} feitas`;
+  return `${statusHtml()}<div class="n-top"><button class="n-link" data-shift-day="0">Hoje</button><div class="n-top-end n-tight">${dayArrows('n-icon')}<button class="n-icon" data-open-history aria-label="Calendário">${ICONS.cal}</button></div></div>
+    <h1 class="n-title">${dayTitle(date)}</h1><p class="n-sub">${longDate(date)}${count ? `<span class="n-sub-count">${count}</span>` : ''}</p>${body}`;
+}
+
 function viewHoje() {
+  if (hojeDate) return viewOtherDay(hojeDate);
   const tasks = todayTasks(), banner = hojeBanner();
   const waiting = backlog().length;
   const body = tasks.length
     ? sectionGroups(tasks, 'edit', list => `${doneCount(list)} de ${list.length}`)
     : `<div class="n-empty"><p>Nada para hoje.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-task>Nova tarefa</button>${waiting && tabPrefs(state).backlog ? `<button class="n-btn n-gray" data-tab="backlog">Ver backlog (${waiting})</button>` : ''}</div></div>`;
   const avatar = me && people.length > 1 ? `<button class="n-avatar" data-tab="ajustes" style="background:${me.color}" aria-label="Conta de ${esc(me.name)}. Abrir Ajustes">${esc(me.name[0])}</button>` : '<span></span>';
-  return `${statusHtml()}<div class="n-top">${avatar}<button class="n-icon" data-open-history aria-label="Calendário">${ICONS.cal}</button></div>
+  return `${statusHtml()}<div class="n-top">${avatar}<div class="n-top-end n-tight">${dayArrows('n-icon')}<button class="n-icon" data-open-history aria-label="Calendário">${ICONS.cal}</button></div></div>
     <h1 class="n-title">Hoje</h1><p class="n-sub">${longDate(today())}${tasks.length ? `<span class="n-sub-count">${doneCount(tasks)} de ${tasks.length} feitas</span>` : ''}</p>${banner}${body}`;
 }
 
@@ -313,16 +343,23 @@ function viewReunioes() {
 
 const agendadasGroup = waiting => waiting.length ? `<section><div class="n-group-h"><h2>Agendadas</h2><span>${waiting.length}</span></div><div class="n-list">${waiting.map(t => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-task="${t.id}"><span>${esc(t.text)}</span><span class="n-meta"><span class="n-accent">${dayShort(t.date)}</span> · ${esc(sectionName(t.section))}</span></button>${t.time ? `<span class="n-meta">${esc(timeLabel(t))}</span>` : ''}</div>`).join('')}</div></section>` : '';
 
+// Planned for a day that went by without them: they wait on top of the backlog until
+// they are moved, done or deleted.
+function overdueGroup(mode) {
+  const list = overdue();
+  return list.length ? `<section class="n-overdue"><div class="n-group-h"><h2>Ficaram para trás</h2><span>${list.length}</span></div><div class="n-list">${list.map(t => taskRow(t, mode, dayShort(t.date))).join('')}</div></section>` : '';
+}
+
 function viewBacklog() {
-  const tasks = backlog(), waiting = selecting ? [] : scheduled().filter(t => !(meetingsApart() && t.meeting));
+  const tasks = backlog(), waiting = selecting ? [] : scheduled().filter(t => !(meetingsApart() && t.meeting)), late = overdue().length;
   const agendadas = agendadasGroup(waiting);
   const head = selecting
     ? `<div class="n-top"><span></span><button class="n-link" data-select-mode>Cancelar</button></div><h1 class="n-title">Backlog</h1><p class="n-sub">${selected.size ? plural(selected.size, 'selecionada', 'selecionadas') : 'Toque nas tarefas para selecionar'}</p>`
-    : `<div class="n-top"><span></span>${tasks.length ? '<button class="n-link" data-select-mode>Selecionar</button>' : ''}</div><h1 class="n-title">Backlog</h1>`;
+    : `<div class="n-top"><span></span>${tasks.length || late ? '<button class="n-link" data-select-mode>Selecionar</button>' : ''}</div><h1 class="n-title">Backlog</h1>`;
   const body = tasks.length
     ? sectionGroups(tasks, selecting ? 'select' : 'swipe', list => list.length)
-    : waiting.length ? '' : '<div class="n-empty"><p>Backlog vazio.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-task>Nova tarefa</button></div></div>';
-  return `${statusHtml()}${head}${agendadas}${body}`;
+    : waiting.length || late ? '' : '<div class="n-empty"><p>Backlog vazio.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-task>Nova tarefa</button></div></div>';
+  return `${statusHtml()}${head}${overdueGroup(selecting ? 'select' : 'swipe')}${agendadas}${body}`;
 }
 
 function billsSegment() {
@@ -505,11 +542,6 @@ function viewAjustes() {
 
 // ---------- Secondary pages ----------
 
-function defaultHistoryDate() {
-  const dates = [...new Set(live(state, 'tasks').map(t => t.date).filter(d => d && d < today()))].sort();
-  return dates.at(-1) || addDays(today(), -1);
-}
-
 // The calendar's week, also the drop targets when a task is dragged to another day.
 function weekStrip(monday, selectedDate) {
   const mark = d => { const list = dayTasks(d); return !list.length ? 'is-none' : list.every(t => t.done) ? 'is-all' : ''; };
@@ -562,6 +594,8 @@ function render() {
   document.body.dataset.layout = wide ? 'desktop' : 'phone';
   // A tab turned off (here or on another device) cannot stay selected.
   if (!visibleTabs().some(([id]) => id === tab)) tab = 'hoje';
+  // Paged to tomorrow and the day turned: that is today now.
+  if (hojeDate === today()) hojeDate = null;
   // Re-rendering replaces the add fields; keep what is being typed and the keyboard open.
   const typing = ['#add-item input', '#quick-task input'].map(sel => { const field = $(sel); return field && {sel, value: field.value, focused: document.activeElement === field}; }).filter(Boolean);
   const searching = document.activeElement?.matches('[data-bill-search]');
@@ -569,12 +603,17 @@ function render() {
   for (const {sel, value, focused} of typing) { const field = $(sel); if (!field) continue; field.value = value; if (focused) field.focus({preventScroll: true}); }
   if ($('#quick-task')) drawQuickChips();
   if (searching) $('[data-bill-search]')?.focus({preventScroll: true});
-  $('#tabbar').innerHTML = wide ? sidebarHtml() : visibleTabs().map(([id, label]) => `<button class="n-tab ${tab === id ? 'is-on' : ''}" data-tab="${id}" ${tab === id ? 'aria-current="page"' : ''}>${ICONS[id]}<span>${label}</span></button>`).join('');
+  $('#tabbar').innerHTML = wide ? sidebarHtml() : visibleTabs().map(([id, label]) => `<button class="n-tab ${tab === id ? 'is-on' : ''}" data-tab="${id}" ${tab === id ? 'aria-current="page"' : ''}>${ICONS[id]}<span>${label}</span>${id === 'backlog' && overdue().length ? '<i class="n-tab-dot" aria-label="Há tarefas que ficaram para trás"></i>' : ''}</button>`).join('');
   let float = '';
   if (wide) float = tab === 'backlog' && selected.size ? backlogActions() : '';
   else if (tab === 'backlog' && selecting) float = `<button class="n-btn n-yellow n-wide" data-move-selected ${selected.size ? '' : 'disabled'}>${selected.size ? `Mover ${selected.size} para hoje` : 'Selecione tarefas'}</button>`;
+  else if (tab === 'hoje' && hojeDate) {
+    // Days ahead take new tasks; earlier days only hand back what was left.
+    const n = hojeDate > today() ? 0 : pendingOn(state, hojeDate).length;
+    float = hojeDate > today() ? `<button class="n-quick" data-new-on-day="${hojeDate}">${ICONS.plus}<span>Nova tarefa</span></button>` : n ? `<button class="n-btn n-yellow n-wide" data-carry-day="${hojeDate}">${n === 1 ? 'Trazer 1 pendente para hoje' : `Trazer ${n} pendentes para hoje`}</button>` : '';
+  }
   else if (tab === 'reunioes') float = `<button class="n-quick" data-new-meeting>${ICONS.plus}<span>Nova reunião</span></button>`;
-  else if ((tab === 'hoje' && todayTasks().length) || (tab === 'backlog' && (backlog().length || scheduled().length))) float = `<button class="n-quick" data-new-task>${ICONS.plus}<span>Nova tarefa</span></button>`;
+  else if ((tab === 'hoje' && todayTasks().length) || (tab === 'backlog' && (backlog().length || scheduled().length || overdue().length))) float = `<button class="n-quick" data-new-task>${ICONS.plus}<span>Nova tarefa</span></button>`;
   $('#float').innerHTML = float;
   document.body.dataset.float = float ? 'yes' : 'no';
   if (sub && document.contains(sub.el)) {
@@ -586,6 +625,8 @@ function render() {
 }
 
 function switchTab(id) {
+  // The Hoje tab always comes back to today.
+  if (id === 'hoje') hojeDate = null;
   if (id !== tab) { tab = id; selecting = false; selected.clear(); cursor = null; }
   // The sidebar stays visible over secondary pages; choosing an area leaves them.
   if (desktop() && navigation.current !== 'root') navigation.back();
@@ -1279,7 +1320,7 @@ document.addEventListener('click', e => {
   else if (d.toggle) { const c = d.collection; c === 'tasks' ? toggleTask(d.toggle) : commit(c, d.toggle, {done: !state[c][d.toggle].done}); }
   else if (d.editTask && projected(d.editTask)) { const {id, ...fields} = projected(d.editTask); commit('tasks', id, fields).then(() => taskSheet({id})); }
   else if (d.editTask) taskSheet({id: d.editTask});
-  else if ('newTask' in d) taskSheet({when: tab === 'backlog' ? 'backlog' : 'today'});
+  else if ('newTask' in d) tab === 'hoje' && hojeDate ? newTaskOn(hojeDate) : taskSheet({when: tab === 'backlog' ? 'backlog' : 'today'});
   else if ('newMeeting' in d) taskSheet({when: 'today', meeting: true});
   else if (d.editRepeat) taskSheet({repeatId: d.editRepeat});
   else if (d.editBill) billSheet(d.editBill, !!d.catalog);
@@ -1296,10 +1337,11 @@ document.addEventListener('click', e => {
   else if ('moveSelected' in d) { moveToToday([...selected]); selecting = false; selected.clear(); render(); }
   else if ('carryLast' in d) { const p = lastPending(state, today()); if (p) carry(p.tasks, p.date); }
   else if ('ignoreLast' in d) { const p = lastPending(state, today()); if (p) commit('days', p.date, {date: p.date, reviewed: true}); }
-  else if ('openHistory' in d) { historyDate = defaultHistoryDate(); navigation.push('history'); }
+  else if ('openHistory' in d) { historyDate = (tab === 'hoje' && hojeDate) || today(); navigation.push('history'); }
   else if (d.day) { historyDate = d.day; render(); }
-  else if ('newOnDay' in d) taskSheet(historyDate > today() ? {when: 'later', date: historyDate} : {when: 'today'});
-  else if ('carryDay' in d) { carry(pendingOn(state, historyDate), historyDate); navigation.back(); }
+  else if ('shiftDay' in d) shiftHoje(Number(d.shiftDay));
+  else if ('newOnDay' in d) newTaskOn(d.newOnDay || historyDate);
+  else if ('carryDay' in d) { const date = d.carryDay || historyDate; carry(pendingOn(state, date), date); if (d.carryDay) shiftHoje(0); else navigation.back(); }
   else if (d.push) navigation.push(d.push);
   else if ('export' in d) exportBackup();
   else if ('logout' in d) logout();
@@ -1401,6 +1443,56 @@ document.addEventListener('keydown', e => {
   saveSectionOrder(ids);
   requestAnimationFrame(() => $(`[data-drag="${handle.dataset.drag}"]`)?.focus());
 });
+
+// Hoje pages a day back or forward; 0 comes back to today. On the phone the page slides.
+function shiftHoje(step, slide = !desktop()) {
+  const go = () => { hojeDate = step ? addDays(hojeDate || today(), step) : null; if (hojeDate === today()) hojeDate = null; cursor = null; render(); const content = $('.page[data-name="root"] .page-content'); if (content) content.scrollTop = 0; };
+  const screen = $('.page[data-name="root"] .n-screen'), dir = step > 0 ? 1 : step < 0 ? -1 : hojeDate > today() ? -1 : 1;
+  if (!slide || !screen || matchMedia('(prefers-reduced-motion: reduce)').matches) { if (screen) Object.assign(screen.style, {transform: '', opacity: '', transition: ''}); return go(); }
+  Object.assign(screen.style, {transition: 'transform .16s ease-in, opacity .16s', transform: `translateX(${-dir * innerWidth * .6}px)`, opacity: '0'});
+  setTimeout(() => {
+    go();
+    Object.assign(screen.style, {transition: 'none', transform: `translateX(${dir * 60}px)`});
+    screen.getBoundingClientRect();
+    Object.assign(screen.style, {transition: 'transform .2s ease-out, opacity .2s', transform: '', opacity: ''});
+  }, 160);
+}
+// Hoje on the phone: swipe sideways to the day before or after. A mostly vertical move
+// keeps scrolling; a held row is a drag, not a swipe.
+let daySwipe = null;
+document.addEventListener('touchstart', e => {
+  daySwipe = null;
+  if (tab !== 'hoje' || desktop() || e.touches.length !== 1 || navigation.current !== 'root') return;
+  // Anywhere on the page, also the empty space below a short list.
+  const screen = e.target.closest('.page[data-name="root"] .page-content')?.querySelector('.n-screen');
+  if (!screen || e.target.closest('input, textarea')) return;
+  daySwipe = {screen, x0: e.touches[0].clientX, y0: e.touches[0].clientY, dx: 0, on: false, t0: e.timeStamp};
+}, {passive: true});
+document.addEventListener('touchmove', e => {
+  const s = daySwipe;
+  if (!s) return;
+  if (rowDrag?.active) { daySwipe = null; Object.assign(s.screen.style, {transform: '', opacity: ''}); return; }
+  const dx = e.touches[0].clientX - s.x0, dy = e.touches[0].clientY - s.y0;
+  if (!s.on) {
+    if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { daySwipe = null; return; }
+    if (Math.abs(dx) < 12 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    s.on = true; s.screen.style.transition = 'none';
+  }
+  if (e.cancelable) e.preventDefault();
+  s.dx = dx;
+  Object.assign(s.screen.style, {transform: `translateX(${dx}px)`, opacity: String(1 - Math.min(.5, Math.abs(dx) / 700))});
+}, {passive: false});
+function endDaySwipe(e) {
+  const s = daySwipe;
+  daySwipe = null;
+  if (!s?.on) return;
+  const fast = Math.abs(s.dx) > 40 && e.timeStamp - s.t0 < 300;
+  const step = e.type === 'touchend' && (Math.abs(s.dx) > innerWidth * .25 || fast) ? (s.dx < 0 ? 1 : -1) : 0;
+  if (step) return shiftHoje(step, true);
+  Object.assign(s.screen.style, {transition: 'transform .18s ease-out, opacity .18s', transform: '', opacity: ''});
+}
+document.addEventListener('touchend', endDaySwipe);
+document.addEventListener('touchcancel', endDaySwipe);
 
 // Hoje and the calendar day: drag a task onto another section, or up past the week strip
 // onto another day. A touch has to press and hold first, so a quick swipe still scrolls;
@@ -1614,9 +1706,15 @@ function toolbar(title, sub, end = '') {
 const deskAdd = (label, attr) => `<button class="d-add" ${attr}>${ICONS.plus}<span>${label}</span></button>`;
 
 function deskHoje() {
-  const tasks = todayTasks();
-  const sub = `${longDate(today())}${tasks.length ? ` · ${doneCount(tasks)} de ${tasks.length} feitas` : ''}`;
-  const end = `<button class="d-tool" data-open-history>${ICONS.cal}<span>Calendário</span></button>${deskAdd('Nova tarefa', 'data-new-task')}`;
+  const date = hojeDate, tasks = hojeTasks(), ahead = date > today();
+  const sub = `${longDate(date || today())}${tasks.length ? ` · ${ahead ? plural(tasks.length, 'prevista', 'previstas') : `${doneCount(tasks)} de ${tasks.length} feitas`}` : ''}`;
+  const pending = date && !ahead ? pendingOn(state, date).length : 0;
+  const pages = `<span class="d-steps">${date ? '<button class="d-tool" data-shift-day="0">Hoje</button>' : ''}${dayArrows('d-tool')}</span>`;
+  const end = `${pages}<button class="d-tool" data-open-history>${ICONS.cal}<span>Calendário</span></button>${pending ? `<button class="d-tool" data-carry-day="${date}">Trazer ${pending === 1 ? '1 pendente' : `${pending} pendentes`}</button>` : ''}${!date || ahead ? deskAdd('Nova tarefa', 'data-new-task') : ''}`;
+  if (date) {
+    const body = tasks.length ? sectionGroups(tasks, 'edit', list => ahead ? list.length : `${doneCount(list)} de ${list.length}`) : `<p class="d-empty">${ahead ? 'Nada previsto para este dia.' : 'Nada neste dia.'}</p>`;
+    return `${toolbar(dayTitle(date), sub, end)}<div class="d-split"><div class="d-main">${statusHtml()}${body}</div>${hojeRail()}</div>`;
+  }
   const example = sections()[0]?.name.split(' ')[0] || 'seção';
   const quick = `<form class="d-quick" id="quick-task">${ICONS.plus}<input name="entry" placeholder="Nova tarefa para hoje. Ex.: Revisar PR 15h #${esc(example)}" autocomplete="off" maxlength="10000" aria-label="Nova tarefa para hoje" aria-describedby="quick-chips"><kbd>N</kbd></form><div class="d-chips" id="quick-chips" aria-live="polite"></div>`;
   const body = tasks.length ? sectionGroups(tasks, 'edit', list => `${doneCount(list)} de ${list.length}`) : '<p class="d-empty">Nada para hoje. Escreva acima e tecle Return.</p>';
@@ -1695,11 +1793,11 @@ function deskReunioes() {
 }
 
 function deskBacklog() {
-  const tasks = backlog(), waiting = scheduled().filter(t => !(meetingsApart() && t.meeting));
+  const tasks = backlog(), waiting = scheduled().filter(t => !(meetingsApart() && t.meeting)), late = overdue().length;
   const body = tasks.length ? sectionGroups(tasks, 'pick', list => list.length)
-    : waiting.length ? '' : '<div class="n-empty"><p>Backlog vazio.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-task>Nova tarefa</button></div></div>';
-  const hint = tasks.length ? `<p class="d-hint">Clique para selecionar, ${KEY === '⌘' ? '⌘' : 'Ctrl'}-clique para somar e Shift-clique para um intervalo. Arraste até Hoje, na barra lateral, ou use ${KEY}Return.</p>` : '';
-  return `${toolbar('Backlog', plural(tasks.length, 'tarefa', 'tarefas'), deskAdd('Nova tarefa', 'data-new-task'))}<div class="d-main d-narrow">${statusHtml()}${agendadasGroup(waiting)}${body}${hint}</div>`;
+    : waiting.length || late ? '' : '<div class="n-empty"><p>Backlog vazio.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-task>Nova tarefa</button></div></div>';
+  const hint = tasks.length || late ? `<p class="d-hint">Clique para selecionar, ${KEY === '⌘' ? '⌘' : 'Ctrl'}-clique para somar e Shift-clique para um intervalo. Arraste até Hoje, na barra lateral, ou use ${KEY}Return.</p>` : '';
+  return `${toolbar('Backlog', `${plural(tasks.length, 'tarefa', 'tarefas')}${late ? ` · ${late} ${late === 1 ? 'ficou' : 'ficaram'} para trás` : ''}`, deskAdd('Nova tarefa', 'data-new-task'))}<div class="d-main d-narrow">${statusHtml()}${overdueGroup('pick')}${agendadasGroup(waiting)}${body}${hint}</div>`;
 }
 function backlogActions() {
   const n = selected.size;
@@ -1758,6 +1856,7 @@ const deskAjustes = () => `${toolbar('Ajustes', '')}<div class="d-main d-narrow 
 const DESK_VIEWS = {hoje: deskHoje, reunioes: deskReunioes, backlog: deskBacklog, compras: deskCompras, contas: deskContas, ajustes: deskAjustes};
 
 function newTask() {
+  if (tab === 'hoje' && hojeDate) return newTaskOn(hojeDate);
   if (tab === 'hoje' && $('#quick-task input')) return $('#quick-task input').focus();
   taskSheet(tab === 'reunioes' ? {when: 'today', meeting: true} : {when: tab === 'backlog' ? 'backlog' : 'today'});
 }
@@ -1783,7 +1882,7 @@ function finderItems(q) {
     {group: 'Ações', icon: ICONS.plus, text: 'Nova tarefa', hint: 'N', run: () => taskSheet({when: 'today'})},
     prefs.reunioes && {group: 'Ações', icon: ICONS.reunioes, text: 'Nova reunião', run: () => taskSheet({when: 'today', meeting: true})},
     prefs.contas && {group: 'Ações', icon: ICONS.contas, text: 'Nova conta', run: () => billSheet()},
-    {group: 'Ações', icon: ICONS.cal, text: 'Calendário', run: () => { historyDate = defaultHistoryDate(); navigation.push('history'); }},
+    {group: 'Ações', icon: ICONS.cal, text: 'Calendário', run: () => { historyDate = (tab === 'hoje' && hojeDate) || today(); navigation.push('history'); }},
   ].filter(Boolean);
   if (!key) return [...go, ...actions];
   const where = t => t.date === '' ? 'Backlog' : t.date === today() ? 'Hoje' : dayShort(t.date);
@@ -2021,6 +2120,7 @@ document.addEventListener('keydown', e => {
   if (mod || e.altKey) return;
   // Space and Return on a focused button already click it.
   if ((key === ' ' || key === 'Enter') && e.target.closest?.('button, a, label')) return;
+  if ((key === 'ArrowLeft' || key === 'ArrowRight') && tab === 'hoje') { e.preventDefault(); shiftHoje(key === 'ArrowLeft' ? -1 : 1); return; }
   if (['j', 'k', 'ArrowDown', 'ArrowUp'].includes(key) && (tab === 'hoje' || tab === 'backlog' || tab === 'reunioes')) {
     const ids = $$('.page[data-name="root"] .n-row[data-row]').map(r => r.dataset.row);
     if (!ids.length) return;

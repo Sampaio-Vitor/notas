@@ -32,6 +32,8 @@ input, select, textarea { font: inherit; color: inherit; }
 .view-main { z-index: 1; }
 .page { background: #000; }
 .page-content { overscroll-behavior-y: contain; }
+/* Swiping Hoje to another day slides the page sideways; that must not scroll it. */
+.page[data-name="root"] .page-content { overflow-x: hidden; }
 .n-screen {
   max-width: 600px; margin: 0 auto;
   padding: env(safe-area-inset-top) 16px calc(var(--tabbar) + 40px);
@@ -42,6 +44,8 @@ body[data-float="yes"] .page[data-name="root"] .n-screen { padding-bottom: calc(
 
 .n-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px; }
 .n-top-end { display: flex; align-items: center; gap: 16px; }
+.n-top-end.n-tight { gap: 10px; }
+.n-top-end.n-tight [data-shift-day="1"] { margin-right: 6px; }
 .n-link { color: var(--yellow); font-size: 17px; min-height: 44px; }
 .n-icon {
   position: relative; width: 36px; height: 36px; border-radius: 50%;
@@ -229,6 +233,9 @@ body.is-moving-task .n-drop-only { display: block; }
 .n-tab { flex: 1; max-width: 150px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: 10.5px; color: #8a8a8e; }
 .n-tab svg { width: 25px; height: 25px; }
 .n-tab.is-on { color: var(--yellow); }
+/* Backlog has tasks that were planned for a day gone by. */
+.n-tab { position: relative; }
+.n-tab-dot { position: absolute; top: 7px; left: calc(50% + 9px); width: 8px; height: 8px; border-radius: 50%; background: var(--late); box-shadow: 0 0 0 2px #161618; }
 body[data-screen="sub"] .n-tabbar, body[data-screen="sub"] .n-float { display: none; }
 
 /* ---------- Sheets ---------- */
@@ -395,6 +402,7 @@ body[data-layout="desktop"] .page[data-name="sub"] .n-screen { padding-top: 16px
 .d-tb-end { display: flex; align-items: center; gap: 8px; flex: none; }
 .d-tool { height: 28px; min-width: 28px; padding: 0 9px; border-radius: 7px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 13px; color: #d1d1d6; }
 .d-tool svg { width: 16px; height: 16px; }
+.d-steps { display: inline-flex; align-items: center; gap: 2px; }
 .d-tool:disabled { color: #545458; }
 .d-tool.is-danger { color: var(--late); }
 .d-pager { display: flex; gap: 2px; }
