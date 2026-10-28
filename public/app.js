@@ -66,7 +66,7 @@ let passkeys = [], regOptions = null, loginOptions = null, loginOptionsError = n
 // Who is signed in. The local cache belongs to one person (`owner`); another
 // person signing in on the same device starts from a clean cache.
 let me = null, people = [], owner = null, sessionLoaded = false;
-let tab = 'hoje', billMonth = today().slice(0, 7), selecting = false, selected = new Set(), historyDate = null, hojeDate = null, sub = null, dragging = false, billsView = 'mes', openMonths = new Set();
+let tab = 'hoje', billMonth = today().slice(0, 7), selecting = false, selected = new Set(), historyDate = null, hojeDate = null, railDate = null, sub = null, dragging = false, billsView = 'mes', openMonths = new Set();
 let billSearch = '', billFilter = 'all';
 
 try {
@@ -178,14 +178,14 @@ const dayTasks = date => {
 // A repeat's occurrence on a day not reached yet exists only on screen; touching it stores it.
 const projected = id => {
   if (state.tasks[id]) return null;
-  for (const date of [historyDate, tab === 'hoje' && hojeDate]) { const t = date && dayTasks(date).find(t => t.id === id); if (t) return t; }
+  for (const date of [historyDate, tab === 'hoje' && hojeDate, tab === 'hoje' && railDate]) { const t = date && dayTasks(date).find(t => t.id === id); if (t) return t; }
   return null;
 };
 // With the Agenda tab on, meetings live there and leave Hoje. Other tasks with a
 // time show in both.
 const meetingsApart = () => tabPrefs(state).reunioes;
 const todayTasks = () => tasksOn(today()).filter(t => !(meetingsApart() && t.meeting));
-const todayMeetings = () => tasksOn(today()).filter(onAgenda);
+const todayMeetings = (date = today()) => tasksOn(date).filter(onAgenda);
 const backlog = () => live(state, 'tasks').filter(t => t.date === '');
 const scheduled = () => scheduledTasks(state, today());
 const overdue = () => overdueTasks(state, today());
@@ -596,6 +596,7 @@ function render() {
   if (!visibleTabs().some(([id]) => id === tab)) tab = 'hoje';
   // Paged to tomorrow and the day turned: that is today now.
   if (hojeDate === today()) hojeDate = null;
+  if (railDate === today()) railDate = null;
   // Re-rendering replaces the add fields; keep what is being typed and the keyboard open.
   const typing = ['#add-item input', '#quick-task input'].map(sel => { const field = $(sel); return field && {sel, value: field.value, focused: document.activeElement === field}; }).filter(Boolean);
   const searching = document.activeElement?.matches('[data-bill-search]');
@@ -626,7 +627,7 @@ function render() {
 
 function switchTab(id) {
   // The Hoje tab always comes back to today.
-  if (id === 'hoje') hojeDate = null;
+  if (id === 'hoje') hojeDate = railDate = null;
   if (id !== tab) { tab = id; selecting = false; selected.clear(); cursor = null; }
   // The sidebar stays visible over secondary pages; choosing an area leaves them.
   if (desktop() && navigation.current !== 'root') navigation.back();
@@ -1340,6 +1341,7 @@ document.addEventListener('click', e => {
   else if ('openHistory' in d) { historyDate = (tab === 'hoje' && hojeDate) || today(); navigation.push('history'); }
   else if (d.day) { historyDate = d.day; render(); }
   else if ('shiftDay' in d) shiftHoje(Number(d.shiftDay));
+  else if ('railDay' in d) { const step = Number(d.railDay); railDate = step ? addDays(railDate || today(), step) : null; if (railDate === today()) railDate = null; render(); }
   else if ('newOnDay' in d) newTaskOn(d.newOnDay || historyDate);
   else if ('carryDay' in d) { const date = d.carryDay || historyDate; carry(pendingOn(state, date), date); if (d.carryDay) shiftHoje(0); else navigation.back(); }
   else if (d.push) navigation.push(d.push);
@@ -1446,7 +1448,7 @@ document.addEventListener('keydown', e => {
 
 // Hoje pages a day back or forward; 0 comes back to today. On the phone the page slides.
 function shiftHoje(step, slide = !desktop()) {
-  const go = () => { hojeDate = step ? addDays(hojeDate || today(), step) : null; if (hojeDate === today()) hojeDate = null; cursor = null; render(); const content = $('.page[data-name="root"] .page-content'); if (content) content.scrollTop = 0; };
+  const go = () => { hojeDate = step ? addDays(hojeDate || today(), step) : null; if (hojeDate === today()) hojeDate = null; railDate = hojeDate; cursor = null; render(); const content = $('.page[data-name="root"] .page-content'); if (content) content.scrollTop = 0; };
   const screen = $('.page[data-name="root"] .n-screen'), dir = step > 0 ? 1 : step < 0 ? -1 : hojeDate > today() ? -1 : 1;
   if (!slide || !screen || matchMedia('(prefers-reduced-motion: reduce)').matches) { if (screen) Object.assign(screen.style, {transform: '', opacity: '', transition: ''}); return go(); }
   Object.assign(screen.style, {transition: 'transform .16s ease-in, opacity .16s', transform: `translateX(${-dir * innerWidth * .6}px)`, opacity: '0'});
@@ -1730,15 +1732,21 @@ function drawQuickChips() {
 
 function hojeRail() {
   const prefs = tabPrefs(state), cards = [], now = nowMinutes();
-  const meetings = byTime(todayMeetings());
-  if (prefs.reunioes || meetings.length) {
+  // The agenda card pages through days on its own (railDate; null is today) and follows Hoje when it pages.
+  const date = railDate || today(), past = date < today(), isToday = date === today();
+  const meetings = byTime(todayMeetings(date));
+  if (prefs.reunioes || meetings.length || railDate) {
     let marked = false;
     const rows = meetings.map(t => {
-      const start = t.time ? minutes(t.time) : null, soon = start !== null && start > now && start - now <= 60;
-      const line = !marked && start !== null && start > now ? (marked = true, `<div class="d-now"><b>${clock(now)}</b><hr></div>`) : '';
-      return `${line}<button class="d-ev ${t.done || (start !== null && minutes(meetingEnd(t)) <= now) ? 'is-past' : ''}" data-edit-task="${t.id}"><b>${t.time ? esc(timeLabel(t)) : '·'}</b><span style="--c:${sectionColor(t.section)}">${esc(t.text)}<small class="${soon ? 'n-accent' : ''}">${soon ? `em ${start - now} min` : esc(sectionName(t.section))}</small></span></button>`;
+      const start = t.time ? minutes(t.time) : null, soon = isToday && start !== null && start > now && start - now <= 60;
+      const line = isToday && !marked && start !== null && start > now ? (marked = true, `<div class="d-now"><b>${clock(now)}</b><hr></div>`) : '';
+      const gone = t.done || past || (isToday && start !== null && minutes(meetingEnd(t)) <= now);
+      return `${line}<button class="d-ev ${gone ? 'is-past' : ''}" data-edit-task="${t.id}"><b>${t.time ? esc(timeLabel(t)) : '·'}</b><span style="--c:${sectionColor(t.section)}">${esc(t.text)}<small class="${soon ? 'n-accent' : ''}">${soon ? `em ${start - now} min` : esc(sectionName(t.section))}</small></span></button>`;
     }).join('');
-    cards.push(`<section class="d-card"><div class="d-card-h"><h2>Agenda de hoje</h2>${prefs.reunioes ? '<button class="n-link" data-tab="reunioes">Semana</button>' : ''}</div>${rows || '<p class="d-card-empty">Nada na agenda hoje.</p>'}</section>`);
+    const title = isToday ? 'Agenda de hoje' : `Agenda · ${dayTitle(date)}`;
+    const steps = `<span class="d-card-steps">${isToday ? '' : '<button class="n-link" data-rail-day="0">Hoje</button>'}<button class="d-tool" data-rail-day="-1" aria-label="Agenda do dia anterior" title="Dia anterior">${ICONS.prev}</button><button class="d-tool" data-rail-day="1" aria-label="Agenda do próximo dia" title="Próximo dia">${ICONS.next}</button>${prefs.reunioes ? '<button class="n-link" data-tab="reunioes">Semana</button>' : ''}</span>`;
+    const empty = isToday ? 'Nada na agenda hoje.' : 'Nada na agenda neste dia.';
+    cards.push(`<section class="d-card"><div class="d-card-h"><h2>${title}</h2>${steps}</div>${rows || `<p class="d-card-empty">${empty}</p>`}</section>`);
   }
   if (prefs.contas) {
     const day = Number(today().slice(8, 10));
