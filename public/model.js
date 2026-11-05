@@ -19,6 +19,11 @@ export function normalize(state) {
   return state;
 }
 
+// Ids the server never stores (they name what every object inherits). A lookup by an id that
+// came from outside goes through `own`, so "constructor" or "toString" is never a record.
+export const RESERVED_IDS = ['__proto__', 'constructor', 'prototype'];
+export const own = (records, id) => records && typeof id === 'string' && Object.hasOwn(records, id) ? records[id] : undefined;
+
 export function apply(state, op) {
   const {collection, id, patch} = op;
   normalize(state);
@@ -87,6 +92,9 @@ export function repeatingBills(state) {
 const monthGap = (a, b) => (Number(a.slice(0, 4)) - Number(b.slice(0, 4))) * 12 + Number(a.slice(5, 7)) - Number(b.slice(5, 7));
 // With lag 1 a bill pays the sessions of the month before its own (October's, paid in November).
 export const billSessionMonth = (b, month = b.month) => shiftMonth(month, -(b.lag === 1 ? 1 : 0));
+// The day a bill falls due in `month` ('YYYY-MM-DD'): its due day, held to the month's last day
+// (a 31 in November is the 30th); without a due day, the month's last day.
+export const billDueDate = (b, month = b.month) => `${month}-${String(Math.min(b.due || 31, lastDayOfMonth(`${month}-01`))).padStart(2, '0')}`;
 export function billDates(b, month = b.month) {
   if (b.calcMode !== 'occurrence') return [];
   const dates = [], source = billSessionMonth(b, month);
@@ -256,6 +264,15 @@ export function scheduledBills(state, from, count = 12) {
   return months;
 }
 
+// The bills of a month. In a month after `current`, also what the repeating ones will create
+// there (`virtual`): a projection that cannot be paid yet.
+export function monthBills(state, month, current) {
+  const real = live(state, 'bills').filter(b => b.month === month);
+  if (month <= current) return {real, projected: []};
+  const ids = new Set(real.map(b => b.id));
+  return {real, projected: scheduledBills(state, month, 1)[0].items.filter(i => !ids.has(i.id))};
+}
+
 // Bills paid next month whose sessions happen in `month`: the next record of the chain
 // when it already exists, otherwise what the rule will create there.
 export function accruingBills(state, month) {
@@ -327,6 +344,14 @@ export function overdueTasks(state, today) {
   for (const t of tasks) if (t.date && !(latest.get(origin(t)) >= t.date)) latest.set(origin(t), t.date);
   return tasks.filter(t => t.date && t.date < today && !t.done && !t.repeat && !t.meeting && latest.get(origin(t)) === t.date)
     .sort((a, b) => b.date.localeCompare(a.date) || (a.time || '99').localeCompare(b.time || '99'));
+}
+
+// The tasks of a day. A day not opened yet also shows what its repeats will create there
+// (an occurrence not stored yet exists only on screen; touching it stores it).
+export function tasksForDay(state, date) {
+  const stored = live(state, 'tasks').filter(t => t.date === date);
+  if (state.days?.[date]) return stored;
+  return [...stored, ...live(state, 'repeats').filter(r => repeatsOn(r, date) && !state.tasks?.[occurrenceId(r.id, date)]).map(r => ({id: occurrenceId(r.id, date), text: r.text, section: r.section, time: r.time || '', date, done: false, repeat: r.id, ...(r.time ? {end: r.end || ''} : {}), ...(r.meeting ? {meeting: true} : {})}))];
 }
 
 export function pendingOn(state, date) {

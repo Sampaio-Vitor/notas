@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {initialState, apply, rollover, live, repeatingBills, scheduledBills, billCatalog, virtualBill, editBillOps, deleteBillOps, undoBillOps, billRule, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills} from '../public/model.js';
+import {initialState, apply, rollover, live, repeatingBills, scheduledBills, billCatalog, virtualBill, editBillOps, deleteBillOps, undoBillOps, billRule, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, billDueDate, monthBills, own} from '../public/model.js';
 
 const run = (state, ops) => ops.forEach(op => apply(state, op));
 function fixture() {
@@ -386,4 +386,31 @@ test('voltar para o mês atual vale para os próximos e preserva o pago', () => 
   assert.equal(s.bills['trainer-2026-12'].amount, 80000);
   assert.equal(s.billRules.trainer.lag, 0);
   assert.equal(s.bills['trainer-2026-12'].lag, 0);
+});
+
+test('billDueDate: o dia do vencimento não passa do fim do mês', () => {
+  assert.equal(billDueDate({due: 31, month: '2026-11'}), '2026-11-30');
+  assert.equal(billDueDate({due: 31, month: '2027-02'}), '2027-02-28');
+  assert.equal(billDueDate({due: 30, month: '2028-02'}), '2028-02-29', 'ano bissexto');
+  assert.equal(billDueDate({due: 5, month: '2026-11'}), '2026-11-05');
+  assert.equal(billDueDate({due: 0, month: '2027-02'}), '2027-02-28', 'sem dia: o último dia do mês');
+  assert.equal(billDueDate({due: 10, month: '2026-11'}, '2026-12'), '2026-12-10', 'em outro mês');
+});
+
+test('monthBills: as gravadas do mês e, num mês futuro, só as projeções que faltam', () => {
+  const s = fixture();
+  run(s, [{collection: 'bills', id: 'iptu-2026-11', patch: {text: 'IPTU', amount: 30000, due: 15, month: '2026-11', done: false, repeat: false}}]);
+  const atual = monthBills(s, '2026-10', '2026-10');
+  assert.deepEqual([atual.real.map(b => b.id), atual.projected], [['internet-2026-10'], []]);
+  const futuro = monthBills(s, '2026-11', '2026-10');
+  assert.deepEqual(futuro.real.map(b => b.id), ['iptu-2026-11']);
+  assert.deepEqual(futuro.projected.map(b => [b.id, b.virtual]), [['internet-2026-11', true]]);
+});
+
+test('own: só registros do próprio estado, nunca do protótipo', () => {
+  const tasks = {a: {id: 'a'}};
+  assert.equal(own(tasks, 'a'), tasks.a);
+  for (const id of ['constructor', 'toString', 'hasOwnProperty', '__proto__', 'valueOf']) assert.equal(own(tasks, id), undefined, id);
+  assert.equal(own(undefined, 'a'), undefined);
+  assert.equal(own(tasks, 1), undefined);
 });

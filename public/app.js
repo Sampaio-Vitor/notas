@@ -3,7 +3,7 @@ import {createNavigation} from './navigation.js';
 const report = message => { try { navigator.sendBeacon?.('/api/client-log', new Blob([JSON.stringify({message})], {type: 'application/json'})); } catch {} };
 addEventListener('error', e => report(`${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`));
 addEventListener('unhandledrejection', e => report(`promise: ${e.reason?.stack || e.reason}`));
-import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, overdueTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, virtualBill, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, billChain, linkedCard, cardBill, parseQuickTask, meetingLanes, meetingEnd, onAgenda, toMinutes, fromMinutes} from './model.js';
+import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, overdueTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, virtualBill, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, billChain, linkedCard, cardBill, parseQuickTask, meetingLanes, meetingEnd, onAgenda, toMinutes, fromMinutes, tasksForDay, billDueDate, monthBills} from './model.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -111,7 +111,7 @@ function ensureLocal() {
 async function api(path, options) {
   const r = await fetch(path, {...options, signal: AbortSignal.timeout(10000)});
   if (r.status === 401) { needsLogin = true; throw Error('login'); }
-  if (!r.ok) throw Object.assign(Error((await r.json()).error || 'Falha de conexão'), {status: r.status});
+  if (!r.ok) { const body = await r.json(); throw Object.assign(Error(body.error || 'Falha de conexão'), {status: r.status, invalid: body.invalid === true}); }
   return r;
 }
 
@@ -137,11 +137,23 @@ async function sync() {
         try {
           await api('/api/operations', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(batch.length > 1 ? batch : batch[0])});
         } catch (e) {
-          if (e.status !== 409) throw e;
+          // A conflict, or a change the server will never accept (`invalid`), leaves the queue;
+          // anything else (offline, a server error) keeps it there for the next try.
+          const refused = e.status === 400 && e.invalid;
+          if (e.status !== 409 && !refused) throw e;
           queue.splice(0, batch.length);
+          if (refused) {
+            // The refused batch may have been creating a record: later ops on the same records would
+            // create it half-made on the server (a `done` without text). They go too, logged together.
+            const keys = new Set(batch.map(op => `${op.collection}:${op.id}`));
+            const dependent = queue.filter(op => keys.has(`${op.collection}:${op.id}`));
+            for (let i = queue.length - 1; i >= 0; i--) if (keys.has(`${queue[i].collection}:${queue[i].id}`)) queue.splice(i, 1);
+            report(`sync: alteração recusada pelo servidor e descartada: ${JSON.stringify([...batch, ...dependent]).slice(0, 1500)}`);
+          }
           remote = normalize(await (await api('/api/state')).json());
           for (const op of queue) apply(remote, op);
           state = remote; save(); render();
+          if (refused) { toast('O servidor recusou uma alteração deste aparelho; ela foi descartada.'); continue; }
           closeSheet();
           toast('As contas mudaram em outro aparelho. Esta alteração não foi aplicada; confira e tente novamente.');
           continue;
@@ -170,11 +182,7 @@ const sections = () => sortedSections(state);
 const sectionName = id => state.sections[id]?.name || 'Sem seção';
 const tasksOn = date => live(state, 'tasks').filter(t => t.date === date);
 // A day not opened yet also shows what its repeats will create there.
-const dayTasks = date => {
-  const stored = tasksOn(date);
-  if (state.days[date]) return stored;
-  return [...stored, ...live(state, 'repeats').filter(r => repeatsOn(r, date) && !state.tasks[occurrenceId(r.id, date)]).map(r => ({id: occurrenceId(r.id, date), text: r.text, section: r.section, time: r.time || '', date, done: false, repeat: r.id, ...(r.time ? {end: r.end || ''} : {}), ...(r.meeting ? {meeting: true} : {})}))];
-};
+const dayTasks = date => tasksForDay(state, date);
 // A repeat's occurrence on a day not reached yet exists only on screen; touching it stores it.
 const projected = id => {
   if (state.tasks[id]) return null;
@@ -370,7 +378,7 @@ const billActions = (b, catalog = false) => `<button class="n-bill-more" data-bi
 const catalogBill = id => billCatalog(state, today().slice(0, 7)).find(b => b.id === id);
 // A stored bill or, in a future month, one the rollover has not created yet.
 const findBill = (id, fromCatalog) => fromCatalog ? catalogBill(id) : state.bills[id] || virtualBill(state, id);
-const billDate = b => b.due ? `${Math.min(b.due, new Date(Number(b.month.slice(0, 4)), Number(b.month.slice(5, 7)), 0).getDate())} de ${MONTHS[Number(b.month.slice(5, 7)) - 1]} de ${b.month.slice(0, 4)}` : monthName(b.month);
+const billDate = b => b.due ? `${Number(billDueDate(b).slice(8, 10))} de ${MONTHS[Number(b.month.slice(5, 7)) - 1]} de ${b.month.slice(0, 4)}` : monthName(b.month);
 const monthOf = month => MONTHS[Number(month.slice(5, 7)) - 1];
 const billCalcLabel = b => b.calcMode === 'occurrence' ? `${plural(billIncludedDates(b).length, 'sessão', 'sessões')}${b.lag === 1 ? ` de ${monthOf(billSessionMonth(b))}` : ''} × ${money(b.unitAmount)}` : '';
 const payWhen = b => billDate(b).replace(/ de \d{4}$/, '');
@@ -418,14 +426,9 @@ function agendadasBody() {
   return `<p class="n-sub">Projeção a partir das contas que se repetem.</p><div class="n-list n-spaced">${months.map(row).join('')}</div><p class="n-note">Toque num mês para ver as contas e os valores.</p>`;
 }
 
-// Bills of a month. In a future month, also what the repeating ones will create there:
-// a projection that cannot be paid yet; editing or deleting one stores that month ahead of time.
-function monthBills(month) {
-  const real = live(state, 'bills').filter(b => b.month === month);
-  if (month <= today().slice(0, 7)) return {real, projected: []};
-  const ids = new Set(real.map(b => b.id));
-  return {real, projected: scheduledBills(state, month, 1)[0].items.filter(i => !ids.has(i.id))};
-}
+// Bills of a month (monthBills, in model.js). In a future month, also what the repeating ones
+// will create there; editing or deleting one stores that month ahead of time.
+const billsOf = month => monthBills(state, month, today().slice(0, 7));
 const plannedMeta = b => `${b.due ? `Dia ${b.due}` : 'Sem dia'}${b.every > 1 ? ` · <i class="n-every">${everyLabel(b.every)}</i>` : ''}${b.calcMode === 'occurrence' ? ` · ${billCalcLabel(b)}` : ''}${cardLabel(b) ? ` · ${esc(cardLabel(b))}` : ''}`;
 const noBills = () => `<div class="n-empty"><p>Nenhuma conta em ${MONTHS[Number(billMonth.slice(5, 7)) - 1]}.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-bill>Adicionar conta</button></div></div>`;
 
@@ -433,7 +436,7 @@ function viewContas() {
   if (billsView === 'todas') return viewAllBills();
   if (billsView === 'agendadas') return viewAgendadas();
   const current = today().slice(0, 7), prev = addMonths(billMonth, -1), next = addMonths(billMonth, 1);
-  const {real: bills, projected} = monthBills(billMonth), accruing = accrualRows(billMonth);
+  const {real: bills, projected} = billsOf(billMonth), accruing = accrualRows(billMonth);
   const sortDue = list => [...list].sort((a, b) => (a.due || 99) - (b.due || 99) || a.text.localeCompare(b.text));
   const unpaid = sortDue(bills.filter(b => !b.done)), paid = sortDue(bills.filter(b => b.done));
   const left = unpaid.reduce((n, b) => n + (b.amount || 0), 0);
@@ -1823,15 +1826,14 @@ function deskContas() {
 
 function billTable() {
   const current = today().slice(0, 7), day = Number(today().slice(8, 10));
-  const {real: bills, projected} = monthBills(billMonth), accruing = accrualRows(billMonth);
+  const {real: bills, projected} = billsOf(billMonth), accruing = accrualRows(billMonth);
   if (!bills.length && !projected.length && !accruing.length) return noBills();
   const sortDue = list => [...list].sort((a, b) => (a.due || 99) - (b.due || 99) || a.text.localeCompare(b.text));
   const unpaid = sortDue(bills.filter(b => !b.done)), paid = sortDue(bills.filter(b => b.done));
   const sum = list => list.reduce((n, b) => n + (b.amount || 0), 0), left = sum(unpaid), total = sum(bills);
   const late = b => b.due && !b.done && (billMonth < current || (billMonth === current && b.due < day));
   const overdue = unpaid.filter(late), next = billMonth === current ? unpaid.find(b => b.due && !late(b)) : null;
-  const lastDay = new Date(Number(billMonth.slice(0, 4)), Number(billMonth.slice(5, 7)), 0).getDate();
-  const nextDay = next && `${billMonth}-${String(Math.min(next.due, lastDay)).padStart(2, '0')}`;
+  const nextDay = next && billDueDate(next, billMonth);
   const planned = sum(projected), future = billMonth > current;
   const stats = future ? `<div class="d-stats"><div class="d-stat is-big"><span>Previsto no mês</span><strong>${money(left + planned)}</strong><small>${plural(unpaid.length + projected.length, 'conta', 'contas')} a pagar</small></div></div>` : `<div class="d-stats">
     <div class="d-stat is-big"><span>${left ? 'Falta pagar' : bills.length ? 'Tudo pago' : 'Nada a pagar'}</span><strong>${money(left)}</strong><div class="n-bar" role="progressbar" aria-valuemin="0" aria-valuemax="${bills.length}" aria-valuenow="${paid.length}" aria-label="Contas pagas"><span style="width:${bills.length ? paid.length / bills.length * 100 : 0}%"></span></div><small>${paid.length} de ${bills.length} pagas · ${money(total)} no mês</small></div>

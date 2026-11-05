@@ -15,6 +15,17 @@ async function launch(dir, env) {
   return {child, url};
 }
 const stop = child => new Promise(resolve => { child.once('exit', resolve); child.kill('SIGTERM'); });
+// A server that must refuse to start: its exit code and what it wrote to stderr.
+function refusedStart(dir, env) {
+  const child = spawn(process.execPath, ['server.mjs'], {env: {...process.env, PORT: '0', DATA_DIR: dir, APP_PASSWORD: '', APP_USERS: '', MCP_TOKENS: '', ...env}, stdio: ['ignore', 'pipe', 'pipe']});
+  let stderr = '';
+  child.stderr.on('data', b => { stderr += b; });
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { child.kill(); reject(Error('não deveria ter subido')); }, 5000);
+    child.stdout.on('data', b => { if (/http:\/\//.test(b)) { clearTimeout(timer); child.kill(); reject(Error('não deveria ter subido')); } });
+    child.once('exit', code => { clearTimeout(timer); resolve({code, stderr}); });
+  });
+}
 const TOKEN = 'token-do-lia-com-mais-de-24-caracteres';
 
 test('MCP: só compras, com token, sem duplicar, avisando os aparelhos', async () => {
@@ -108,6 +119,98 @@ test('MCP: desligado sem MCP_TOKENS e token curto não sobe', async () => {
     assert.equal((await fetch(proc.url + '/mcp', {method: 'POST', headers: {Authorization: 'Bearer qualquer'}, body: '{}'})).status, 405, 'sem tokens o /mcp não existe');
     await stop(proc.child);
     await assert.rejects(launch(dir, {MCP_TOKENS: 'lia:curto'}), /exit/);
+  } finally {
+    if (proc?.child.exitCode === null) await stop(proc.child);
+    await rm(dir, {recursive: true, force: true});
+  }
+});
+
+test('MCP: token com espaço alcança tarefas e contas só desse espaço', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'notas-mcp-'));
+  const ROBO = 'token-do-robo-com-mais-de-24-caracteres';
+  let proc;
+  try {
+    proc = await launch(dir, {APP_USERS: 'ana:Ana:senha-do-ana,bia:Bia:senha-da-bia', MCP_TOKENS: `lia:${TOKEN},robo:${ROBO}:ana`});
+    const {url} = proc;
+    let n = 0;
+    const rpc = (method, params, token) => fetch(url + '/mcp', {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: `Bearer ${token}`}, body: JSON.stringify({jsonrpc: '2.0', id: ++n, method, params})});
+    const call = async (token, name, args) => (await (await rpc('tools/call', {name, arguments: args}, token)).json());
+
+    const doLia = (await (await rpc('tools/list', {}, TOKEN)).json()).result.tools.map(t => t.name);
+    assert.ok(!doLia.includes('tarefa_criar'), 'token sem espaço: só compras');
+    assert.equal((await call(TOKEN, 'tarefa_criar', {texto: 'x', quando: 'hoje'})).error.code, -32602);
+    const doRobo = (await (await rpc('tools/list', {}, ROBO)).json()).result.tools.map(t => t.name);
+    assert.ok(doRobo.includes('compras_listar') && doRobo.includes('tarefa_criar') && doRobo.includes('contas_mes'));
+
+    const criada = (await call(ROBO, 'tarefa_criar', {texto: 'Comprar ração', quando: 'hoje'})).result;
+    assert.equal(criada.isError, false);
+    const id = criada.structuredContent.id;
+    // Uma seção que não existe: o erro traz as seções.
+    const errada = (await call(ROBO, 'tarefa_criar', {texto: 'x', quando: 'hoje', secao: 'Inexistente'})).result;
+    assert.equal(errada.isError, true);
+    assert.match(errada.content[0].text, /as seções são/);
+
+    const entrar = async (user, password) => (await fetch(url + '/api/login', {method: 'POST', body: JSON.stringify({user, password})})).headers.get('set-cookie').split(';')[0];
+    const doAna = await (await fetch(url + '/api/state', {headers: {cookie: await entrar('ana', 'senha-do-ana')}})).json();
+    assert.equal(doAna.tasks[id].text, 'Comprar ração');
+    const daBia = await (await fetch(url + '/api/state', {headers: {cookie: await entrar('bia', 'senha-da-bia')}})).json();
+    assert.equal(daBia.tasks[id], undefined, 'o espaço vem do token: a Bia não vê');
+    // Nenhum argumento muda o espaço.
+    const outra = (await call(ROBO, 'tarefas_dia', {espaco: 'bia'})).result;
+    assert.ok(outra.structuredContent.secoes.flatMap(s => s.tarefas).some(t => t.id === id));
+
+    assert.equal((await call(ROBO, 'tarefa_concluir', {id})).result.structuredContent.feita, true);
+
+    // Ids herdados do protótipo: erro, e nada gravado (antes virava uma tarefa fantasma).
+    for (const fantasma of ['constructor', 'toString', '__proto__']) {
+      const r = (await call(ROBO, 'tarefa_mover', {id: fantasma, quando: 'hoje'})).result;
+      assert.equal(r.isError, true, fantasma);
+    }
+    const semFantasma = await (await fetch(url + '/api/state', {headers: {cookie: await entrar('ana', 'senha-do-ana')}})).json();
+    assert.equal(Object.hasOwn(semFantasma.tasks, 'constructor'), false);
+    assert.equal(Object.hasOwn(semFantasma.tasks, 'toString'), false);
+
+    // Horário no backlog: erro claro.
+    const backlog = (await call(ROBO, 'tarefa_criar', {texto: 'x', quando: 'backlog', horario: '10:00'})).result;
+    assert.equal(backlog.isError, true);
+    assert.match(backlog.content[0].text, /backlog não tem horário/);
+
+    // A mesma chave, repetida (como depois de um erro de rede): uma tarefa só.
+    const pedido = {texto: 'Renovar CNH', quando: 'amanha', chave: 'telegram-981'};
+    const uma = (await call(ROBO, 'tarefa_criar', pedido)).result.structuredContent;
+    const outraVez = (await call(ROBO, 'tarefa_criar', pedido)).result.structuredContent;
+    assert.equal(outraVez.id, uma.id);
+    assert.equal(outraVez.repetida, true);
+    const depois = await (await fetch(url + '/api/state', {headers: {cookie: await entrar('ana', 'senha-do-ana')}})).json();
+    assert.equal(Object.values(depois.tasks).filter(t => t.text === 'Renovar CNH').length, 1);
+    const contas = (await call(ROBO, 'contas_mes', {})).result;
+    assert.equal(contas.isError, false);
+    assert.deepEqual(contas.structuredContent.contas, []);
+
+    const backup = await (await fetch(url + '/api/export', {headers: {cookie: await entrar('ana', 'senha-do-ana')}})).json();
+    const ops = backup.operations.map(o => JSON.parse(o.value)).filter(v => v.agent === 'robo');
+    assert.ok(ops.length >= 2 && ops.every(v => v.space === 'ana' && v.user === 'ana'));
+  } finally {
+    if (proc?.child.exitCode === null) await stop(proc.child);
+    await rm(dir, {recursive: true, force: true});
+  }
+});
+
+test('MCP: espaço digitado errado no MCP_TOKENS não sobe; token sem espaço continua igual', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'notas-mcp-'));
+  const ROBO = 'token-do-robo-com-mais-de-24-caracteres';
+  const users = 'ana:Ana:senha-do-ana,bia:Bia:senha-da-bia';
+  let proc;
+  try {
+    const {code, stderr} = await refusedStart(dir, {APP_USERS: users, MCP_TOKENS: `lia:${TOKEN},robo:${ROBO}:vitro`});
+    assert.notEqual(code, 0);
+    assert.match(stderr, /o espaço "vitro" do agente "robo" não é ninguém de APP_USERS \(ana, bia\)/);
+
+    // A Lia (sem espaço) segue como antes; um último campo que não tem forma de id continua sendo parte do token.
+    proc = await launch(dir, {APP_USERS: users, MCP_TOKENS: `lia:${TOKEN},velho:${ROBO}:Com-Maiuscula`});
+    const tools = async token => (await (await fetch(proc.url + '/mcp', {method: 'POST', headers: {Authorization: `Bearer ${token}`}, body: JSON.stringify({jsonrpc: '2.0', id: 1, method: 'tools/list'})})).json()).result.tools.map(t => t.name);
+    assert.deepEqual(await tools(TOKEN), ['compras_listar', 'compras_adicionar', 'compras_remover', 'compras_sugerir']);
+    assert.deepEqual(await tools(`${ROBO}:Com-Maiuscula`), ['compras_listar', 'compras_adicionar', 'compras_remover', 'compras_sugerir']);
   } finally {
     if (proc?.child.exitCode === null) await stop(proc.child);
     await rm(dir, {recursive: true, force: true});

@@ -6,6 +6,8 @@ import {fileURLToPath} from 'node:url';
 import {randomBytes, randomUUID, createHmac, timingSafeEqual} from 'node:crypto';
 import {generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse} from '@simplewebauthn/server';
 import {initialState, apply, rollover, migrate, normalize, itemKey, itemId, listed, billOpsConflict, cardBillOps} from './public/model.js';
+import {SPACE_TOOLS, SPACE_TOOL_NAMES, spaceTool} from './mcp-espaco.mjs';
+import {validate} from './validacao.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '127.0.0.1', port = Number(process.env.PORT || 4329);
@@ -172,13 +174,23 @@ async function syncCards() {
 if (finance) { syncCards(); setInterval(syncCards, 10 * 60000).unref(); }
 
 // ---------- MCP ----------
-// Agents (a shopping assistant) reach only the shopping list, never anyone's personal space.
-// MCP_TOKENS="lia:<token>,..."; each token is sent as "Authorization: Bearer <token>".
+// Agents (a shopping assistant) reach only the shopping list. An agent whose token names a space
+// (MCP_TOKENS="lia:<token>,robo:<token>:ana") also reaches that person's tasks and bills,
+// and only theirs: the space comes from the token, never from an argument.
+// Each token is sent as "Authorization: Bearer <token>". A last field shaped like an id that
+// names nobody is a mistyped space (robo:<token>:vitro), not the end of the token: it stops
+// the server instead of silently becoming part of a token that reaches only the shopping list.
 const agents = (process.env.MCP_TOKENS || '').split(',').filter(e => e.trim()).map(entry => {
-  const [id, ...rest] = entry.trim().split(':'), token = rest.join(':');
-  if (!/^[a-z0-9-]+$/.test(id || '') || token.length < 24) throw Error(`MCP_TOKENS inválido em "${id}". Use id:token, com token de 24 caracteres ou mais.`);
-  return {id, token};
+  const [id, ...rest] = entry.trim().split(':');
+  if (rest.length >= 2 && /^[a-z0-9-]+$/.test(rest.at(-1)) && !userById(rest.at(-1))) {
+    throw Error(`MCP_TOKENS: o espaço "${rest.at(-1)}" do agente "${id}" não é ninguém de APP_USERS (${users.map(u => u.id).join(', ')}). Use id:token ou id:token:espaço.`);
+  }
+  const space = rest.length >= 2 && userById(rest.at(-1)) ? rest.pop() : undefined;
+  const token = rest.join(':');
+  if (!/^[a-z0-9-]+$/.test(id || '') || token.length < 24) throw Error(`MCP_TOKENS inválido em "${id}". Use id:token ou id:token:espaço, com token de 24 caracteres ou mais.`);
+  return {id, token, space};
 });
+for (const a of agents.filter(a => a.space)) console.log(`mcp: ${a.id} alcança tarefas e contas de ${a.space}`);
 const agentFor = req => {
   const token = req.headers.authorization?.match(/^Bearer (\S+)$/)?.[1];
   return token ? agents.find(a => equal(token, a.token)) : undefined;
@@ -239,7 +251,7 @@ function callTool(agent, name, args = {}) {
       ops.push(op(id, {text: label, done: false, listed: true, added: Date.now(), by}));
       added.push(label);
     }
-    commit(ops, SHARED, {user: by, agent: agent.id});
+    commitFromAgent(ops, SHARED, {user: by, agent: agent.id});
     return {adicionados: added, ja_estavam: already};
   }
   if (name === 'compras_remover') {
@@ -250,10 +262,32 @@ function callTool(agent, name, args = {}) {
       ops.push(op(id, {listed: false, done: false}));
       removed.push(item.text);
     }
-    commit(ops, SHARED, {user: agent.id, agent: agent.id});
+    commitFromAgent(ops, SHARED, {user: agent.id, agent: agent.id});
     return {removidos: removed, nao_encontrados: missing, ...(missing.length ? {lista: shoppingList().map(i => i.nome)} : {})};
   }
   return null;
+}
+
+// What an agent writes passes the same validation as what the app sends, in the same JSON form:
+// an operation the app's own sync would have refused never gets in (and then blocks a device's
+// queue). One invalid operation means nothing of the call is written.
+function commitFromAgent(ops, space, who) {
+  const wire = JSON.parse(JSON.stringify(ops));
+  const invalid = wire.find(op => !validate(op));
+  if (invalid) {
+    console.error('mcp: operação inválida recusada:', JSON.stringify(invalid).slice(0, 500));
+    throw Error('alteração inválida; nada foi gravado');
+  }
+  commit(wire, space, who);
+}
+
+// Tasks and bills of the agent's space, through the same commit as the app (one transaction,
+// an opId per operation, logged with the agent, and a notice to that person's devices).
+function callSpaceTool(agent, name, args) {
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) throw Error('argumentos devem ser um objeto');
+  const {result, ops} = spaceTool(spaces.get(agent.space), name, args, today(), randomUUID, agent.id);
+  commitFromAgent(ops.map(op => ({opId: `mcp-${randomUUID()}`, ...op})), agent.space, {user: agent.space, agent: agent.id});
+  return result;
 }
 
 // Streamable HTTP without sessions: one JSON-RPC request in, one JSON response out.
@@ -268,61 +302,18 @@ function mcpResponse(agent, message) {
     return ok({protocolVersion: MCP_VERSIONS.includes(asked) ? asked : MCP_VERSIONS[0], capabilities: {tools: {}}, serverInfo: {name: 'notas', version: '0.1.0'}, instructions: MCP_INSTRUCTIONS});
   }
   if (method === 'ping') return ok({});
-  if (method === 'tools/list') return ok({tools: MCP_TOOLS});
+  if (method === 'tools/list') return ok({tools: agent.space ? [...MCP_TOOLS, ...SPACE_TOOLS] : MCP_TOOLS});
   if (method === 'tools/call') {
-    if (!MCP_TOOLS.some(t => t.name === params.name)) return fail(-32602, `Tool desconhecida: ${params.name}`);
+    const inSpace = agent.space && SPACE_TOOL_NAMES.has(params.name);
+    if (!inSpace && !MCP_TOOLS.some(t => t.name === params.name)) return fail(-32602, `Tool desconhecida: ${params.name}`);
     try {
-      const result = callTool(agent, params.name, params.arguments || {});
+      const result = inSpace ? callSpaceTool(agent, params.name, params.arguments || {}) : callTool(agent, params.name, params.arguments || {});
       return ok({content: [{type: 'text', text: JSON.stringify(result)}], structuredContent: result, isError: false});
     } catch (e) {
       return ok({content: [{type: 'text', text: e.message}], isError: true});
     }
   }
   return fail(-32601, `Método desconhecido: ${method}`);
-}
-
-// ---------- Validation ----------
-const billCalculation = {calcMode: 'string', unitAmount: 'number', weekdays: 'string', starts: 'string', excluded: 'string', lag: 'number'};
-const schema = {
-  sections: {name: 'string', order: 'number', deleted: 'boolean'},
-  tasks: {text: 'string', section: 'string', date: 'string', time: 'string', end: 'string', done: 'boolean', repeat: 'string', from: 'string', meeting: 'boolean', deleted: 'boolean'},
-  repeats: {text: 'string', section: 'string', time: 'string', end: 'string', days: 'string', monthDay: 'number', weeks: 'number', start: 'string', meeting: 'boolean', deleted: 'boolean'},
-  bills: {text: 'string', amount: 'number', due: 'number', repeat: 'boolean', every: 'number', group: 'string', month: 'string', done: 'boolean', skipped: 'boolean', skipReason: 'string', deleted: 'boolean', ...billCalculation},
-  billRules: {text: 'string', amount: 'number', due: 'number', repeat: 'boolean', every: 'number', month: 'string', ...billCalculation},
-  meetings: {text: 'string', time: 'string', weekday: 'number', section: 'string', deleted: 'boolean'},
-  days: {date: 'string', reviewed: 'boolean'},
-  months: {month: 'string'},
-  prefs: {reunioes: 'boolean', backlog: 'boolean', compras: 'boolean', contas: 'boolean'},
-  // `cards` is written only by the server, from the finance app.
-  cardLinks: {card: 'string'},
-  shopping: {text: 'string', done: 'boolean', listed: 'boolean', added: 'number', by: 'string'},
-};
-// Field formats beyond the type check; time and a meeting's end are optional (empty string).
-const clockTime = v => v === '' || /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
-const formats = {
-  time: clockTime, end: clockTime, days: v => /^[0-6]{0,7}$/.test(v),
-  every: v => Number.isInteger(v) && v >= 1 && v <= 24, weeks: v => Number.isInteger(v) && v >= 1 && v <= 8, monthDay: v => Number.isInteger(v) && v <= 31, due: v => Number.isInteger(v) && v <= 31,
-  month: v => /^\d{4}-(0[1-9]|1[0-2])$/.test(v),
-  calcMode: v => ['fixed', 'occurrence'].includes(v),
-  lag: v => v === 0 || v === 1,
-  skipReason: v => ['', 'frequency', 'removed'].includes(v),
-  unitAmount: v => Number.isSafeInteger(v) && v <= 100000000,
-  weekdays: v => /^[0-6]{0,7}$/.test(v) && new Set(v).size === v.length,
-  starts: v => v === '' || (/^\d{4}-\d{2}-\d{2}$/.test(v) && Number.isFinite(Date.parse(`${v}T12:00:00Z`)) && new Date(`${v}T12:00:00Z`).toISOString().slice(0, 10) === v),
-  excluded: v => v === '' || (v.split(',').length <= 31 && v.split(',').every(date => /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(date))),
-  start: v => formats.date(v),
-  date: v => v === '' || (/^\d{4}-\d{2}-\d{2}$/.test(v) && Number.isFinite(Date.parse(`${v}T12:00:00Z`)) && new Date(`${v}T12:00:00Z`).toISOString().slice(0, 10) === v),
-  order: v => Number.isInteger(v), weekday: v => Number.isInteger(v) && v <= 6,
-  card: v => /^\d{0,18}$/.test(v),
-};
-function validate(op) {
-  if (!op || typeof op.opId !== 'string' || op.opId.length > 100 || !Object.hasOwn(schema, op.collection)) return false;
-  if (typeof op.id !== 'string' || op.id.length > 200 || ['__proto__', 'constructor', 'prototype'].includes(op.id)) return false;
-  if (!op.patch || typeof op.patch !== 'object' || Array.isArray(op.patch)) return false;
-  if (op.batchId !== undefined && (typeof op.batchId !== 'string' || op.batchId.length > 100)) return false;
-  if (['expectedBill', 'expectedBillRule'].some(k => op[k] !== undefined && (typeof op[k] !== 'string' || op[k].length > 20000 || !['bills', 'billRules'].includes(op.collection)))) return false;
-  return Object.entries(op.patch).every(([k, v]) => Object.hasOwn(schema[op.collection], k) && typeof v === schema[op.collection][k]
-    && (typeof v !== 'string' || v.length <= 10000) && (typeof v !== 'number' || (Number.isFinite(v) && v >= 0)) && (!formats[k] || formats[k](v)));
 }
 
 async function body(req) {
@@ -474,9 +465,10 @@ const server = http.createServer(async (req, res) => {
       }
       if (route('POST', '/api/operations')) {
         const request = await body(req), ops = Array.isArray(request) ? request : [request];
-        if (!ops.length || ops.length > 500 || !ops.every(validate)) return json(400, {error: 'Alteração inválida'});
+        // `invalid`: sending it again will never work, so the app drops it instead of retrying forever.
+        if (!ops.length || ops.length > 500 || !ops.every(validate)) return json(400, {error: 'Alteração inválida', invalid: true});
         const space = ops[0].collection === 'shopping' ? SHARED : user.id;
-        if (ops.some(op => (op.collection === 'shopping' ? SHARED : user.id) !== space)) return json(400, {error: 'Alteração inválida'});
+        if (ops.some(op => (op.collection === 'shopping' ? SHARED : user.id) !== space)) return json(400, {error: 'Alteração inválida', invalid: true});
         const fresh = ops.filter(op => !db.prepare('SELECT id FROM operations WHERE id=?').get(op.opId));
         if (billOpsConflict(spaces.get(space), fresh)) return json(409, {error: 'As contas mudaram em outro aparelho. Confira os dados e tente novamente.'});
         // Who added an item is decided here, not by the client.

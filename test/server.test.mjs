@@ -21,6 +21,9 @@ test('API: autenticação, sessão, persistência, SSE, idempotência e validaç
  assert.equal((await post({...op,patch:{text:'Não deve sobrescrever'}})).status,200);
  assert.equal((await post({...op,opId:'invalid',id:'__proto__'})).status,400);
  assert.equal((await post({...op,opId:'invalid2',collection:'constructor'})).status,400);
+ // A refused change says so (`invalid`), so the app drops it instead of retrying it forever; a malformed request does not.
+ const refused=await post({...op,opId:'invalid3',id:'constructor'});assert.equal(refused.status,400);assert.deepEqual(await refused.json(),{error:'Alteração inválida',invalid:true});
+ const malformed=await fetch(url+'/api/operations',{method:'POST',headers:headers(),body:'{nao é json'});assert.equal(malformed.status,400);assert.equal((await malformed.json()).invalid,undefined);
  assert.equal((await post({opId:'rep',collection:'repeats',id:'r1',patch:{text:'Daily',section:'s1',time:'09:30',days:'12345',monthDay:0}})).status,200);
  assert.equal((await post({opId:'rep-meeting',collection:'repeats',id:'r3',patch:{text:'Daily',section:'s1',time:'11:00',days:'12345',monthDay:0,meeting:true}})).status,200);
  assert.equal((await post({opId:'pref-ok',collection:'prefs',id:'tabs',patch:{reunioes:true,contas:false}})).status,200);
