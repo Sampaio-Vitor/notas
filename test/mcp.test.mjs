@@ -98,6 +98,30 @@ test('MCP: só compras, com token, sem duplicar, avisando os aparelhos', async (
     assert.deepEqual((await call('compras_sugerir', {texto: 'caf'})).structuredContent.sugestoes.map(s => [s.nome, s.na_lista]), [['Café', true]]);
     assert.equal((await call('compras_sugerir', {texto: ''})).isError, true);
 
+    // Marcar como comprado no app grava quando e quem; o MCP informa.
+    const send = patch => fetch(url + '/api/operations', {method: 'POST', headers: {cookie}, body: JSON.stringify({opId: `op-${Math.random()}`, collection: 'shopping', id: 'i-leite', patch})});
+    const naLoja = Date.now() - 3600000;
+    assert.equal((await send({done: true, bought: naLoja, boughtBy: 'ana'})).status, 200);
+    let leite = (await (await fetch(url + '/api/state', {headers: {cookie}})).json()).shopping['i-leite'];
+    assert.equal(leite.bought, naLoja, 'vale a hora do aparelho (pode ter ficado sem internet no mercado)');
+    assert.equal(leite.boughtBy, 'bia', 'quem comprou vem da sessão, não do aparelho');
+    r = await call('compras_listar', {});
+    assert.deepEqual(r.structuredContent.itens.find(i => i.nome === 'Leite'), {nome: 'Leite', por: 'Bia', carrinho: true, comprado_em: new Date(naLoja).toISOString(), comprado_por: 'Bia'});
+    assert.equal(r.structuredContent.itens.find(i => i.nome === 'Café').comprado_em, undefined);
+    // Hora impossível vira a do servidor; tirar do carrinho (ainda na lista) apaga o registro.
+    await send({done: true, bought: Date.now() + 86400000});
+    leite = (await (await fetch(url + '/api/state', {headers: {cookie}})).json()).shopping['i-leite'];
+    assert.ok(leite.bought <= Date.now());
+    await send({done: false, bought: 0});
+    leite = (await (await fetch(url + '/api/state', {headers: {cookie}})).json()).shopping['i-leite'];
+    assert.equal(leite.bought, 0); assert.equal(leite.boughtBy, '');
+    // Limpar o carrinho guarda a última compra, que as sugestões mostram.
+    await send({done: true, bought: naLoja});
+    await send({listed: false, done: false, bought: 0});
+    r = await call('compras_sugerir', {texto: 'leite'});
+    assert.deepEqual(r.structuredContent.sugestoes.map(s => [s.na_lista, s.ultima_compra, s.comprado_por]), [[false, new Date(naLoja).toISOString(), 'Bia']]);
+    assert.equal((await call('compras_sugerir', {texto: 'caf'})).structuredContent.sugestoes[0].ultima_compra, null);
+
     // Adicionar de novo volta pra lista.
     assert.deepEqual((await call('compras_adicionar', {itens: ['Pão de forma'], por: 'ana'})).structuredContent.adicionados, ['Pão de forma']);
 

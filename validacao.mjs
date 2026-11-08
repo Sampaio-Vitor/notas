@@ -15,7 +15,8 @@ const schema = {
   prefs: {reunioes: 'boolean', backlog: 'boolean', compras: 'boolean', contas: 'boolean'},
   // `cards` is written only by the server, from the finance app.
   cardLinks: {card: 'string'},
-  shopping: {text: 'string', done: 'boolean', listed: 'boolean', added: 'number', by: 'string'},
+  // `bought` (when it went into the cart, ms) comes from the app; `boughtBy` only from the server.
+  shopping: {text: 'string', done: 'boolean', listed: 'boolean', added: 'number', by: 'string', bought: 'number', boughtBy: 'string'},
 };
 // Field formats beyond the type check; time and a meeting's end are optional (empty string).
 const clockTime = v => v === '' || /^([01]\d|2[0-3]):[0-5]\d$/.test(v);

@@ -173,6 +173,23 @@ async function syncCards() {
 }
 if (finance) { syncCards(); setInterval(syncCards, 10 * 60000).unref(); }
 
+// ---------- Shopping ----------
+// When an item goes into the cart, the item records when and who. The time comes from the
+// device (it may have been offline in the store), unless it is missing or implausible; the
+// person always comes from the session. Taking it back out of the cart, still on the list,
+// was a mistake: the record is cleared. Clearing the cart or removing the item keeps it, as
+// the last time it was bought.
+const BOUGHT_SLACK = 30 * 86400000;
+function stampBought(patch, user) {
+  delete patch.boughtBy;
+  const now = Date.now();
+  if (patch.done === true) {
+    if (!(typeof patch.bought === 'number' && patch.bought > now - BOUGHT_SLACK && patch.bought <= now + 60000)) patch.bought = now;
+    patch.boughtBy = user;
+  } else if (patch.done === false && patch.listed === undefined) { patch.bought = 0; patch.boughtBy = ''; }
+  else delete patch.bought;
+}
+
 // ---------- MCP ----------
 // Agents (a shopping assistant) reach only the shopping list. An agent whose token names a space
 // (MCP_TOKENS="lia:<token>,robo:<token>:ana") also reaches that person's tasks and bills,
@@ -200,7 +217,7 @@ const itemsArg = {type: 'array', items: {type: 'string', minLength: 1, maxLength
 const porArg = {type: 'string', description: 'Id de quem pediu; o item fica com a cor dessa pessoa. Sem ele, fica no nome do agente.'};
 const MCP_TOOLS = [
   {name: 'compras_listar', title: 'Ver a lista de compras',
-    description: 'A lista de compras da casa: o que falta comprar e o que já está no carrinho, com quem adicionou cada item.',
+    description: 'A lista de compras da casa: o que falta comprar e o que já está no carrinho, com quem adicionou cada item. Item no carrinho traz quando foi marcado como comprado (comprado_em, ISO 8601) e por quem (comprado_por).',
     inputSchema: {type: 'object', properties: {}}, annotations: {readOnlyHint: true}},
   {name: 'compras_adicionar', title: 'Adicionar à lista de compras',
     description: 'Põe itens na lista de compras da casa. Um item por entrada, só o nome ("leite", "pão de forma"). Item que já está na lista não duplica.',
@@ -209,13 +226,16 @@ const MCP_TOOLS = [
     description: 'Tira itens da lista de compras da casa pelo nome. Se algum não for encontrado, a resposta traz a lista atual para tentar com o nome que está nela.',
     inputSchema: {type: 'object', properties: {itens: itemsArg}, required: ['itens']}, annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true}},
   {name: 'compras_sugerir', title: 'Sugerir itens já comprados',
-    description: 'Itens que já estiveram na lista e começam com o texto (acento e maiúscula não importam), os mais recentes primeiro. Para completar o que alguém está digitando.',
+    description: 'Itens que já estiveram na lista e começam com o texto (acento e maiúscula não importam), os mais recentes primeiro. Para completar o que alguém está digitando. Traz também a última vez que cada um foi comprado (ultima_compra, ISO 8601, ou null) e por quem.',
     inputSchema: {type: 'object', properties: {texto: {type: 'string', minLength: 1, maxLength: 200}}, required: ['texto']}, annotations: {readOnlyHint: true}},
 ];
 const MCP_INSTRUCTIONS = 'Lista de compras compartilhada da casa, a mesma do app Notas. Acentos e maiúsculas não importam nos nomes.';
 
+const personName = id => userById(id)?.name || id || '';
+const isoTime = ms => ms ? new Date(ms).toISOString() : null;
 const shoppingList = () => listed(spaces.get(SHARED)).sort((a, b) => (a.added || 0) - (b.added || 0))
-  .map(i => ({nome: i.text, por: userById(i.by)?.name || i.by || '', carrinho: !!i.done}));
+  .map(i => ({nome: i.text, por: personName(i.by), carrinho: !!i.done,
+    ...(i.done ? {comprado_em: isoTime(i.bought), comprado_por: i.boughtBy ? personName(i.boughtBy) : null} : {})}));
 function itemsFrom(args) {
   const items = args.itens;
   if (!Array.isArray(items) || !items.length || items.length > 50 || !items.every(t => typeof t === 'string' && t.trim() && t.length <= 200)) throw Error('itens deve ser uma lista de 1 a 50 nomes');
@@ -237,7 +257,8 @@ function callTool(agent, name, args = {}) {
     const starts = i => itemKey(i.text).startsWith(prefix) ? 0 : itemKey(i.text).split(' ').some(w => w.startsWith(prefix)) ? 1 : null;
     const found = Object.values(shopping).filter(i => !i.deleted && i.text && starts(i) !== null)
       .sort((a, b) => starts(a) - starts(b) || (b.added || 0) - (a.added || 0)).slice(0, 5);
-    return {sugestoes: found.map(i => ({nome: i.text, na_lista: !!current(i.id), ultima_vez: i.added || null}))};
+    return {sugestoes: found.map(i => ({nome: i.text, na_lista: !!current(i.id), ultima_vez: i.added || null,
+      ultima_compra: isoTime(i.bought), ...(i.bought && i.boughtBy ? {comprado_por: personName(i.boughtBy)} : {})}))};
   }
   if (name === 'compras_adicionar') {
     const items = itemsFrom(args);
@@ -472,7 +493,7 @@ const server = http.createServer(async (req, res) => {
         const fresh = ops.filter(op => !db.prepare('SELECT id FROM operations WHERE id=?').get(op.opId));
         if (billOpsConflict(spaces.get(space), fresh)) return json(409, {error: 'As contas mudaram em outro aparelho. Confira os dados e tente novamente.'});
         // Who added an item is decided here, not by the client.
-        for (const op of ops) if (op.collection === 'shopping') { delete op.patch.by; if (op.patch.listed === true) op.patch.by = user.id; }
+        for (const op of ops) if (op.collection === 'shopping') { delete op.patch.by; if (op.patch.listed === true) op.patch.by = user.id; stampBought(op.patch, user.id); }
         commit(ops, space, {user: user.id});
         return json(200, {ok: true});
       }

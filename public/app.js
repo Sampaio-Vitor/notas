@@ -471,6 +471,9 @@ function viewContas() {
     ${paid.length ? `<div class="n-group-h"><h2>Pagas</h2></div><div class="n-list">${paid.map(row).join('')}</div>` : ''}`;
 }
 
+// Into the cart = bought now (the server keeps the time and who); out of it again clears that.
+const toggleCart = id => commit('shopping', id, state.shopping[id].done ? {done: false, bought: 0} : {done: true, bought: Date.now()});
+
 function shoppingParts() {
   const items = listed(state);
   const toBuy = items.filter(i => !i.done).sort((a, b) => (b.added || 0) - (a.added || 0));
@@ -1321,7 +1324,7 @@ document.addEventListener('click', e => {
   else if ('close' in d) closeSheet();
   else if ('back' in d) navigation.back();
   else if (d.toggle && d.collection === 'tasks' && projected(d.toggle)) { const {id, ...fields} = projected(d.toggle); commit('tasks', id, {...fields, done: true}); }
-  else if (d.toggle) { const c = d.collection; c === 'tasks' ? toggleTask(d.toggle) : commit(c, d.toggle, {done: !state[c][d.toggle].done}); }
+  else if (d.toggle) { const c = d.collection; c === 'tasks' ? toggleTask(d.toggle) : c === 'shopping' ? toggleCart(d.toggle) : commit(c, d.toggle, {done: !state[c][d.toggle].done}); }
   else if (d.editTask && projected(d.editTask)) { const {id, ...fields} = projected(d.editTask); commit('tasks', id, fields).then(() => taskSheet({id})); }
   else if (d.editTask) taskSheet({id: d.editTask});
   else if ('newTask' in d) tab === 'hoje' && hojeDate ? newTaskOn(hojeDate) : taskSheet({when: tab === 'backlog' ? 'backlog' : 'today'});
@@ -1983,7 +1986,7 @@ function menuAction(d) {
   else if (d.ctx === 'pay') commit('bills', id, {done: !state.bills[id].done});
   else if (d.ctx === 'bill-edit') billSheet(id);
   else if (d.ctx === 'bill-delete') deleteBillSheet(state.bills[id]);
-  else if (d.ctx === 'item-done') commit('shopping', id, {done: !state.shopping[id].done});
+  else if (d.ctx === 'item-done') toggleCart(id);
   else if (d.ctx === 'item-edit') itemSheet(id);
   else if (d.ctx === 'item-remove') { commit('shopping', id, {listed: false, done: false}); toast(`${state.shopping[id].text} tirado da lista.`); }
 }
