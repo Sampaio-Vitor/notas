@@ -12,11 +12,16 @@ const schema = {
   meetings: {text: 'string', time: 'string', weekday: 'number', section: 'string', deleted: 'boolean'},
   days: {date: 'string', reviewed: 'boolean'},
   months: {month: 'string'},
-  prefs: {reunioes: 'boolean', backlog: 'boolean', compras: 'boolean', contas: 'boolean'},
+  // prefs.casa.seen: when this person last looked at Casa (ms), for the dot on its tab.
+  prefs: {reunioes: 'boolean', backlog: 'boolean', compras: 'boolean', contas: 'boolean', seen: 'number'},
   // `cards` is written only by the server, from the finance app.
   cardLinks: {card: 'string'},
   // `bought` (when it went into the cart, ms) comes from the app; `boughtBy` only from the server.
   shopping: {text: 'string', done: 'boolean', listed: 'boolean', added: 'number', by: 'string', bought: 'number', boughtBy: 'string'},
+  // Casa (shared). `by`, `added`, `doneBy`, `doneAt` and `editedBy` are stamped by the server.
+  lists: {name: 'string', order: 'number', deleted: 'boolean'},
+  chores: {text: 'string', list: 'string', who: 'string', date: 'string', cycle: 'string', next: 'string', done: 'boolean', added: 'number', by: 'string', doneAt: 'number', doneBy: 'string', deleted: 'boolean'},
+  notes: {title: 'string', body: 'string', order: 'number', added: 'number', by: 'string', edited: 'number', editedBy: 'string', deleted: 'boolean'},
 };
 // Field formats beyond the type check; time and a meeting's end are optional (empty string).
 const clockTime = v => v === '' || /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
@@ -35,6 +40,9 @@ const formats = {
   date: v => v === '' || (/^\d{4}-\d{2}-\d{2}$/.test(v) && Number.isFinite(Date.parse(`${v}T12:00:00Z`)) && new Date(`${v}T12:00:00Z`).toISOString().slice(0, 10) === v),
   order: v => Number.isInteger(v), weekday: v => Number.isInteger(v) && v <= 6,
   card: v => /^\d{0,18}$/.test(v),
+  who: v => /^[a-z0-9-]{0,40}$/.test(v),
+  cycle: v => ['', 'w1', 'w2', 'm1', 'm3', 'm6', 'y1'].includes(v),
+  list: v => v.length > 0 && v.length <= 200 && !RESERVED_IDS.includes(v),
 };
 export function validate(op) {
   if (!op || typeof op.opId !== 'string' || op.opId.length > 100 || !Object.hasOwn(schema, op.collection)) return false;

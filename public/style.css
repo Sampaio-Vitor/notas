@@ -638,3 +638,49 @@ body[data-layout="desktop"] .n-group-h .n-link { font-size: 13px; min-height: 0;
 .n-pick-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
 .n-pick-x { color: var(--secondary); min-width: 44px; min-height: 44px; margin-right: -12px; }
 .n-pick-cta { position: sticky; bottom: calc(-24px - env(safe-area-inset-bottom)); margin: 4px -16px calc(-24px - env(safe-area-inset-bottom)); padding: 10px 16px calc(24px + env(safe-area-inset-bottom)); background: var(--group); }
+.n-back { display: inline-flex; align-items: center; gap: 2px; margin-left: -6px; }
+.n-back svg { width: 20px; height: 20px; }
+
+/* ---------- Casa ---------- */
+/* Who does a chore: their initial on their color; half and half when anyone can. */
+.c-who { flex: none; width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; color: #000; font: 700 11px/1 var(--sys); font-style: normal; }
+.c-any { background: linear-gradient(90deg, var(--who-a, #64d2ff) 50%, var(--who-b, #ff8fb1) 50%); }
+.c-day { flex: none; display: inline-flex; align-items: center; gap: 3px; font-size: 12.5px; padding: 3px 8px; border-radius: 99px; background: var(--group-2); color: #d1d1d6; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.c-day svg { width: 11px; height: 11px; }
+.c-day.is-today { background: rgba(255, 214, 10, .16); color: var(--yellow); }
+.c-day.is-late { background: rgba(255, 105, 97, .16); color: var(--late); }
+.n-row[data-chore-row] { gap: 10px; }
+.c-foryou .n-list { box-shadow: inset 0 0 0 1px rgba(255, 214, 10, .28); }
+.c-house { display: inline-flex; vertical-align: -2px; margin-right: 6px; color: var(--secondary); }
+.c-house svg { width: 18px; height: 18px; }
+.c-filter { margin-top: 16px; }
+.c-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.c-tile { display: flex; flex-direction: column; gap: 10px; text-align: left; background: var(--group); border-radius: 14px; padding: 12px 13px; min-height: 104px; }
+.c-tile-ic { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: #000; }
+.c-tile-ic svg { width: 17px; height: 17px; }
+.c-tile-nm { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 16px; font-weight: 600; margin-top: auto; }
+.c-tile-nm span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c-tile-nm em { font-style: normal; font-weight: 400; color: var(--secondary); font-variant-numeric: tabular-nums; }
+.c-tile small { color: var(--secondary); font-size: 12.5px; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; margin-top: -6px; }
+.c-tile small .is-late { color: var(--late); }
+.c-tile-new { background: transparent; box-shadow: inset 0 0 0 1.5px var(--group-2); }
+.c-tile-new .c-tile-ic { background: var(--group-2); color: var(--yellow); font-size: 20px; }
+.c-tile-new .c-tile-nm { color: var(--yellow); }
+.c-note-body { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+.c-tab-dot { background: var(--yellow); }
+.c-side-h { display: flex; justify-content: space-between; align-items: center; }
+.c-faces { display: flex; }
+.c-faces i { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; color: #000; font: 700 9px/1 var(--sys); font-style: normal; margin-left: -4px; box-shadow: 0 0 0 2px #1b1b1d; }
+.c-side-new span { color: #8e8e93; }
+.d-sec.is-on { background: rgba(255, 214, 10, .17); }
+.c-feed { display: grid; gap: 10px; margin-top: 4px; }
+.c-ev { display: flex; gap: 8px; font-size: 13px; line-height: 1.35; }
+.c-ev .c-who { width: 18px; height: 18px; font-size: 9.5px; }
+.c-ev b { font-weight: 600; }
+.c-ev small { display: block; color: var(--secondary); font-size: 11.5px; }
+.n-seg label .c-who { width: 18px; height: 18px; font-size: 9.5px; vertical-align: -4px; margin-right: 5px; }
+.n-seg label span { display: flex; align-items: center; justify-content: center; }
+/* A done chore strikes its name, not the line under it. */
+.is-done .n-text.n-two[data-edit-chore] { text-decoration: none; }
+.is-done .n-text.n-two[data-edit-chore] > span:first-child { text-decoration: line-through; text-decoration-color: #5a5a5e; }
+.c-faces i:first-child { margin-left: 0; }

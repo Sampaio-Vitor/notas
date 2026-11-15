@@ -3,7 +3,7 @@ import {createNavigation} from './navigation.js';
 const report = message => { try { navigator.sendBeacon?.('/api/client-log', new Blob([JSON.stringify({message})], {type: 'application/json'})); } catch {} };
 addEventListener('error', e => report(`${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`));
 addEventListener('unhandledrejection', e => report(`promise: ${e.reason?.stack || e.reason}`));
-import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, overdueTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, virtualBill, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, billChain, linkedCard, cardBill, parseQuickTask, meetingLanes, meetingEnd, onAgenda, toMinutes, fromMinutes, tasksForDay, billDueDate, monthBills} from './model.js';
+import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, overdueTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, virtualBill, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, billChain, linkedCard, cardBill, parseQuickTask, meetingLanes, meetingEnd, onAgenda, toMinutes, fromMinutes, tasksForDay, billDueDate, monthBills, liveLists, liveChores, choresForToday, parseChore, nextCycleDate, CYCLES} from './model.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -46,6 +46,8 @@ const ICONS = {
   rep: '<svg viewBox="0 0 16 16" aria-label="Repete"><path d="M3 7a5 5 0 0 1 8.6-3.4L13 5M13 2v3h-3M13 9a5 5 0 0 1-8.6 3.4L3 11M3 14v-3h3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   check: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   plus: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  casa: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11 12 4.5 20 11v8a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M10 20.5v-5.5h4v5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
+  more: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4.5" cy="10" r="1.6" fill="currentColor"/><circle cx="10" cy="10" r="1.6" fill="currentColor"/><circle cx="15.5" cy="10" r="1.6" fill="currentColor"/></svg>',
   eye: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 10s3-5.5 8-5.5S18 10 18 10s-3 5.5-8 5.5S2 10 2 10z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="10" cy="10" r="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>',
   search: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M13 13l4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
   hoje: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 12.2l2.4 2.4 4.6-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -55,7 +57,9 @@ const ICONS = {
   compras: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 8.5h13l-1 11a1.5 1.5 0 0 1-1.5 1.4H8a1.5 1.5 0 0 1-1.5-1.4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9 8.5V7a3 3 0 0 1 6 0v1.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
   ajustes: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h9M18 7h1M5 17h1M10 17h9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="16" cy="7" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="8" cy="17" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
 };
-const TABS = [['hoje', 'Hoje'], ['reunioes', 'Agenda'], ['backlog', 'Backlog'], ['compras', 'Compras'], ['contas', 'Contas'], ['ajustes', 'Ajustes']];
+// The tab id `compras` is kept for saved preferences; the tab is Casa (Compras is one of its lists).
+const TABS = [['hoje', 'Hoje'], ['reunioes', 'Agenda'], ['backlog', 'Backlog'], ['compras', 'Casa'], ['contas', 'Contas'], ['ajustes', 'Ajustes']];
+const tabIcon = id => ICONS[id === 'compras' ? 'casa' : id];
 // Hoje and Ajustes always show; the others follow this person's choices in Ajustes.
 const visibleTabs = () => { const prefs = tabPrefs(state); return TABS.filter(([id]) => !(id in prefs) || prefs[id]); };
 
@@ -322,12 +326,13 @@ function viewOtherDay(date) {
 
 function viewHoje() {
   if (hojeDate) return viewOtherDay(hojeDate);
-  const tasks = todayTasks(), banner = hojeBanner();
+  const tasks = todayTasks(), banner = hojeBanner(), casa = hojeCasaGroup();
   const waiting = backlog().length;
-  const body = tasks.length
-    ? sectionGroups(tasks, 'edit', list => `${doneCount(list)} de ${list.length}`)
+  const body = tasks.length || casa
+    ? sectionGroups(tasks, 'edit', list => `${doneCount(list)} de ${list.length}`) + casa
     : `<div class="n-empty"><p>Nada para hoje.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-task>Nova tarefa</button>${waiting && tabPrefs(state).backlog ? `<button class="n-btn n-gray" data-tab="backlog">Ver backlog (${waiting})</button>` : ''}</div></div>`;
-  const avatar = me && people.length > 1 ? `<button class="n-avatar" data-tab="ajustes" style="background:${me.color}" aria-label="Conta de ${esc(me.name)}. Abrir Ajustes">${esc(me.name[0])}</button>` : '<span></span>';
+  // Ajustes is not in the tab bar: the avatar (or, with one person, the gear) is the way in.
+  const avatar = me && people.length > 1 ? `<button class="n-avatar" data-tab="ajustes" style="background:${me.color}" aria-label="Conta de ${esc(me.name)}. Abrir Ajustes">${esc(me.name[0])}</button>` : `<button class="n-icon" data-tab="ajustes" aria-label="Ajustes">${ICONS.ajustes}</button>`;
   return `${statusHtml()}<div class="n-top">${avatar}<div class="n-top-end n-tight">${dayArrows('n-icon')}<button class="n-icon" data-open-history aria-label="Calendário">${ICONS.cal}</button></div></div>
     <h1 class="n-title">Hoje</h1><p class="n-sub">${longDate(today())}${tasks.length ? `<span class="n-sub-count">${doneCount(tasks)} de ${tasks.length} feitas</span>` : ''}</p>${banner}${body}`;
 }
@@ -485,9 +490,9 @@ function shoppingParts() {
   return {toBuy, inCart, row, legend, form};
 }
 
-function viewCompras() {
+function viewCompras(back = '') {
   const {toBuy, inCart, row, legend, form} = shoppingParts();
-  return `${statusHtml()}<div class="n-top"></div><h1 class="n-title">Compras</h1>${legend}
+  return `${statusHtml()}<div class="n-top">${back}</div><h1 class="n-title">Compras</h1>${legend}
     ${form}
     ${toBuy.length ? `<div class="n-list n-spaced">${toBuy.map(row).join('')}</div>` : inCart.length ? '' : '<p class="n-note n-spaced">Lista vazia.</p>'}
     ${inCart.length ? `<div class="n-group-h"><h2>No carrinho</h2><button class="n-link" data-clear-cart>Limpar</button></div><div class="n-list">${inCart.map(row).join('')}</div>` : ''}`;
@@ -521,19 +526,368 @@ function itemSheet(id) {
   });
 }
 
+
+// ---------- Casa ----------
+// Shared by everyone in APP_USERS: Compras plus lists of chores and pinned notes. A chore
+// says who does it (`who`, '' for anyone) and maybe a day; the ones for you show in your Hoje.
+
+const meId = () => me?.id || '';
+const shared = () => people.length > 1;
+const person = id => people.find(p => p.id === id);
+const personColor = id => person(id)?.color || 'var(--secondary)';
+const personName = id => id === meId() ? 'Você' : person(id)?.name || '';
+const others = () => people.filter(p => p.id !== meId());
+const listName = id => id === 'compras' ? 'Compras' : state.lists[id]?.name || '';
+const doneToday = c => !!c.doneAt && dayKey(new Date(c.doneAt)) === today();
+const hojeChores = () => choresForToday(state, meId(), today(), doneToday);
+// "Pra você": what someone else asked you to do.
+const forYou = () => liveChores(state).filter(c => !c.done && c.who === meId() && c.by && c.by !== meId())
+  .sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999') || (a.added || 0) - (b.added || 0));
+const casaSeen = () => state.prefs?.casa?.seen || 0;
+
+// What the others did in Casa, newest first: added, asked, checked, edited.
+function casaNews(days = 7) {
+  const since = Date.now() - days * 864e5, mine = meId(), events = [];
+  for (const c of liveChores(state)) {
+    if (c.by && c.by !== mine && c.added > since) events.push({at: c.added, who: c.by, text: c.who === mine ? `pediu <b>${esc(c.text)}</b> pra você` : `adicionou <b>${esc(c.text)}</b>`, where: listName(c.list), fresh: true});
+    if (c.done && c.doneBy && c.doneBy !== mine && c.doneAt > since) events.push({at: c.doneAt, who: c.doneBy, text: `fez <b>${esc(c.text)}</b>`, where: listName(c.list)});
+  }
+  for (const i of listed(state)) {
+    if (i.by && i.by !== mine && i.added > since && !i.done) events.push({at: i.added, who: i.by, text: `pôs <b>${esc(i.text)}</b>`, where: 'Compras', fresh: true});
+    if (i.done && i.boughtBy && i.boughtBy !== mine && i.bought > since) events.push({at: i.bought, who: i.boughtBy, text: `pegou <b>${esc(i.text)}</b>`, where: 'Compras'});
+  }
+  for (const n of live(state, 'notes')) if (n.editedBy && n.editedBy !== mine && n.edited > since) events.push({at: n.edited, who: n.editedBy, text: `editou <b>${esc(n.title || 'uma nota')}</b>`, where: 'Notas fixas', fresh: true});
+  return events.sort((a, b) => b.at - a.at);
+}
+// The dot on the Casa tab: someone else added or asked something since you last opened it.
+const casaUnseen = () => shared() && casaNews(30).some(e => e.fresh && e.at > casaSeen());
+let seenPending = false;
+function markCasaSeen() {
+  if (seenPending || !casaUnseen()) return;
+  seenPending = true;
+  setTimeout(() => { seenPending = false; if (tab === 'compras' && casaUnseen()) commit('prefs', 'casa', {seen: Date.now()}); });
+}
+
+function whenAgo(ms) {
+  const min = Math.round((Date.now() - ms) / 60000);
+  if (min < 1) return 'agora';
+  if (min < 60) return `há ${min} min`;
+  const date = dayKey(new Date(ms));
+  if (date === today()) return `há ${Math.round(min / 60)} h`;
+  if (date === addDays(today(), -1)) return 'ontem';
+  return dayShort(date).replace(/^\S+ /, '');
+}
+// "Hoje", "Amanhã", "Qui" this week, "5 de dez" further away or in the past ("Ontem").
+function choreDay(date) {
+  if (date === today()) return 'Hoje';
+  if (date === addDays(today(), 1)) return 'Amanhã';
+  if (date === addDays(today(), -1)) return 'Ontem';
+  if (date > today() && date <= addDays(today(), 6)) return WEEK[weekday(date)].slice(0, 3);
+  return `${Number(date.slice(8, 10))} de ${MONTHS[Number(date.slice(5, 7)) - 1].slice(0, 3)}`;
+}
+// A small disc with the initial of whoever does it; half and half when anyone can.
+function whoDisc(who) {
+  if (!shared()) return '';
+  if (!who) return `<i class="c-who c-any" title="Qualquer um" aria-label="Qualquer um"></i>`;
+  const p = person(who);
+  return p ? `<i class="c-who" style="background:${p.color}" title="${esc(personName(who))}" aria-label="${esc(who === meId() ? 'Você faz' : `${p.name} faz`)}">${esc(p.name[0])}</i>` : '';
+}
+
+// `showToday`: the "Hoje" chip, left out where the group already says it is today.
+function choreRow(c, {showList = false, showToday = true} = {}) {
+  // "Bia pediu" only on what someone asked you; the circle's color already says who added it.
+  const asked = shared() && c.who === meId() && c.by && c.by !== meId() && !c.done ? `${personName(c.by)} pediu` : '';
+  const did = c.done && c.doneBy ? `${c.doneBy === meId() ? 'Você fez' : `${personName(c.doneBy)} fez`} ${whenAgo(c.doneAt)}` : '';
+  const sub = [showList && listName(c.list), did || asked].filter(Boolean).join(' · ');
+  const late = c.date && c.date < today() && !c.done;
+  const day = c.date && !c.done && (showToday || c.date !== today()) ? `<span class="c-day ${late ? 'is-late' : c.date === today() ? 'is-today' : ''}">${c.cycle ? ICONS.rep : ''}${choreDay(c.date)}</span>` : '';
+  return `<div class="n-row ${c.done ? 'is-done' : ''} ${c.done && settling.has(c.id) ? 'is-settling' : ''}" style="--who:${personColor(c.by)}" data-chore-row="${esc(c.id)}"><button class="n-check n-who" data-toggle="${esc(c.id)}" data-collection="chores" aria-pressed="${!!c.done}" aria-label="${c.done ? 'Desmarcar' : 'Concluir'} ${esc(c.text)}">${ICONS.check}</button><button class="n-text ${sub ? 'n-two' : ''}" data-edit-chore="${esc(c.id)}"><span>${esc(c.text)}</span>${sub ? `<span class="n-meta">${esc(sub)}</span>` : ''}</button>${day}${whoDisc(c.who)}</div>`;
+}
+
+// Checking a cycling chore schedules the next one; unchecking it takes that one back.
+function toggleChore(id) {
+  const c = state.chores[id];
+  if (!c) return;
+  settling.add(id);
+  const ops = [];
+  if (!c.done) {
+    const next = c.cycle && c.date && !(c.next && state.chores[c.next] && !state.chores[c.next].deleted) ? nextCycleDate(c.date, c.cycle, today()) : '';
+    const nextId = next ? uid() : '';
+    ops.push({collection: 'chores', id, patch: {done: true, ...(nextId ? {next: nextId} : {})}});
+    if (nextId) ops.push({collection: 'chores', id: nextId, patch: {text: c.text, list: c.list, who: c.who || '', date: next, cycle: c.cycle, done: false, added: Date.now()}});
+  } else {
+    ops.push({collection: 'chores', id, patch: {done: false, next: ''}});
+    const next = c.next && state.chores[c.next];
+    if (next && !next.done && !next.deleted) ops.push({collection: 'chores', id: next.id, patch: {deleted: true}});
+  }
+  commitMany(ops);
+  clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => { settling.clear(); render(); }, 450);
+}
+
+// Groups of a list by when: late, today, this week, later, someday; done at the end.
+function choreGroups(list, filter = () => true) {
+  const items = liveChores(state, list).filter(filter), t = today(), week = addDays(t, 6);
+  const open = items.filter(c => !c.done || settling.has(c.id)), done = items.filter(c => c.done && !settling.has(c.id)).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
+  const byDate = (a, b) => (a.date || '').localeCompare(b.date || '') || (a.added || 0) - (b.added || 0);
+  const groups = [['Atrasadas', c => c.date && c.date < t], ['Hoje', c => c.date === t], ['Esta semana', c => c.date > t && c.date <= week], ['Mais adiante', c => c.date > week], ['Quando der', c => !c.date]]
+    .map(([title, test]) => [title, open.filter(test).sort(byDate)]).filter(([, rows]) => rows.length);
+  return {groups, done, open};
+}
+const choreFilter = () => casaFilter === 'mine' ? c => c.who === meId() || c.who === '' : casaFilter === 'others' ? c => c.who && c.who !== meId() : () => true;
+let casaView = null, casaFilter = 'all';
+
+function choreListBody(list) {
+  const {groups, done, open} = choreGroups(list, choreFilter());
+  const filters = shared() ? `<div class="n-seg c-filter">${[['all', 'Todos'], ['mine', 'Meus'], ['others', others().length === 1 ? others()[0].name : 'Outros']].map(([id, label]) => `<button class="n-seg-b ${casaFilter === id ? 'is-on' : ''}" data-casa-filter="${id}" aria-pressed="${casaFilter === id}">${esc(label)}</button>`).join('')}</div>` : '';
+  const example = shared() ? ` Ex.: Trocar o filtro @${itemKey(others()[0].name).split(' ')[0]} sáb` : ' Ex.: Trocar o filtro sáb';
+  const form = `<form class="n-add" id="add-chore" data-list="${esc(list)}"><input name="entry" placeholder="Adicionar" autocomplete="off" autocapitalize="sentences" enterkeyhint="enter" maxlength="10000" aria-label="Adicionar em ${esc(listName(list))}" aria-describedby="chore-hint"><button class="n-icon" data-keep-focus aria-label="Adicionar">${ICONS.plus}</button></form><p class="n-note" id="chore-hint">${shared() ? '@nome diz quem faz; ' : ''}dia no fim: hoje, amanhã, sáb, 20/12.${example}</p>`;
+  const body = groups.map(([title, rows]) => `<section><div class="n-group-h"><h2>${title}</h2><span>${rows.length}</span></div><div class="n-list">${rows.map(c => choreRow(c, {showToday: title !== 'Hoje'})).join('')}</div></section>`).join('');
+  const doneHtml = done.length ? `<section><div class="n-group-h"><h2>Feitas</h2><button class="n-link" data-clear-done="${esc(list)}">Limpar</button></div><div class="n-list">${done.slice(0, 20).map(c => choreRow(c)).join('')}</div></section>` : '';
+  const empty = !open.length && !done.length ? `<p class="n-note n-spaced">${casaFilter === 'all' ? 'Nada nesta lista.' : 'Nada com este filtro.'}</p>` : '';
+  return {html: `${filters}${form}${body}${doneHtml}${empty}`, count: open.filter(c => !c.done).length};
+}
+
+function casaTiles() {
+  const toBuy = listed(state).filter(i => !i.done);
+  const tile = (id, name, color, count, sub) => `<button class="c-tile" data-casa-open="${esc(id)}"><span class="c-tile-ic" style="background:${color}">${id === 'compras' ? ICONS.compras : ICONS.check}</span><span class="c-tile-nm"><span>${esc(name)}</span><em>${count || ''}</em></span><small>${sub}</small></button>`;
+  const tiles = [tile('compras', 'Compras', 'var(--yellow)', toBuy.length, toBuy.length ? esc(toBuy.slice(0, 3).map(i => i.text).join(', ')) : 'Lista vazia')];
+  casaLists().forEach((l, i) => {
+    const open = liveChores(state, l.id).filter(c => !c.done), late = open.filter(c => c.date && c.date < today()).length;
+    tiles.push(tile(l.id, l.name, LIST_COLORS[i % LIST_COLORS.length], open.length, late ? `<span class="is-late">${plural(late, 'atrasada', 'atrasadas')}</span>` : open.length ? esc(open.slice(0, 2).map(c => c.text).join(', ')) : 'Nada pendente'));
+  });
+  tiles.push('<button class="c-tile c-tile-new" data-new-list><span class="c-tile-ic">+</span><span class="c-tile-nm"><span>Nova lista</span></span><small>Viagem, presentes…</small></button>');
+  return `<div class="c-tiles">${tiles.join('')}</div>`;
+}
+const LIST_COLORS = ['#30d158', '#64d2ff', '#bf5af2', '#ff9f0a', '#ff375f', '#5e5ce6', '#ac8e68'];
+const casaLists = () => liveLists(state);
+const listColor = id => { const i = casaLists().findIndex(l => l.id === id); return id === 'compras' ? 'var(--yellow)' : i < 0 ? '#8e8e93' : LIST_COLORS[i % LIST_COLORS.length]; };
+
+function notesGroup() {
+  const notes = live(state, 'notes').filter(n => n.title || n.body).sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || (a.added || 0) - (b.added || 0));
+  const rows = notes.map(n => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-note="${esc(n.id)}"><span>${esc(n.title || n.body.split('\n')[0])}</span>${n.body && n.title ? `<span class="n-meta c-note-body">${esc(n.body.replace(/\s*\n\s*/g, ' · '))}</span>` : ''}</button></div>`).join('');
+  return `<section><div class="n-group-h"><h2>Notas fixas</h2><span>${notes.length || ''}</span></div><div class="n-list">${rows}<div class="n-row n-plain"><button class="n-text n-accent" data-new-note>Nova nota</button></div></div></section>`;
+}
+
+function forYouGroup() {
+  const mine = forYou();
+  return mine.length ? `<section class="c-foryou"><div class="n-group-h"><h2>Pra você</h2><span>${mine.length}</span></div><div class="n-list">${mine.map(c => choreRow(c, {showList: true})).join('')}</div></section>` : '';
+}
+
+const casaNames = () => { const names = people.map(p => p.name); return names.length < 2 ? 'Listas e notas' : `${names.slice(0, -1).join(', ')} e ${names.at(-1)}`; };
+
+function viewCasa() {
+  markCasaSeen();
+  return `${statusHtml()}<div class="n-top"><span></span><button class="n-icon" data-new-chore aria-label="Novo afazer">${ICONS.plus}</button></div>
+    <h1 class="n-title">Casa</h1><p class="n-sub">${esc(casaNames())}</p>
+    ${forYouGroup()}
+    <div class="n-group-h"><h2>Listas</h2></div>${casaTiles()}
+    ${notesGroup()}`;
+}
+
+// A Casa list (or Compras) as a page over the Casa tab.
+function pageCasa() {
+  const id = casaView;
+  const back = '<button class="n-link n-back" data-back>' + ICONS.prev + 'Casa</button>';
+  if (id === 'compras') return {html: viewCompras(back), action: ''};
+  if (!state.lists[id] || state.lists[id].deleted) return {html: `<div class="n-top">${back}</div><div class="n-empty"><p>Esta lista foi excluída.</p></div>`, action: ''};
+  const {html, count} = choreListBody(id);
+  return {html: `${statusHtml()}<div class="n-top">${back}<button class="n-icon" data-edit-list="${esc(id)}" aria-label="Renomear ou excluir a lista">${ICONS.more}</button></div><h1 class="n-title">${esc(listName(id))}</h1><p class="n-sub">${count ? plural(count, 'pendente', 'pendentes') : 'Nada pendente'}</p>${html}`, action: ''};
+}
+
+function openCasa(id) {
+  casaView = id;
+  if (desktop()) { if (tab !== 'compras') { tab = 'compras'; selecting = false; selected.clear(); cursor = null; } if (navigation.current !== 'root') navigation.back(); render(); return; }
+  navigation.push('casa');
+}
+
+function addChore(raw, list) {
+  const parsed = parseChore(raw, people, meId(), today());
+  if (!parsed.text) return;
+  commit('chores', uid(), {text: parsed.text, list, who: parsed.who ?? '', date: parsed.date || '', cycle: '', done: false, added: Date.now()});
+  const bits = [parsed.who !== undefined && shared() ? (parsed.who ? (parsed.who === meId() ? 'pra você' : `pra ${personName(parsed.who)}`) : 'pra qualquer um') : '', parsed.date ? choreDay(parsed.date).toLowerCase() : ''].filter(Boolean);
+  if (bits.length) toast(`Adicionado ${bits.join(', ')}.`);
+}
+
+function choreSheet({id, list} = {}) {
+  const c = id ? state.chores[id] : null;
+  const lists = casaLists();
+  if (!lists.length) { toast('Crie uma lista primeiro.'); return; }
+  const listId = c?.list || (list && state.lists[list] && !state.lists[list].deleted ? list : lists[0].id);
+  const who = c ? c.who || '' : '';
+  const date = c?.date || '';
+  const when = !date ? 'none' : date === today() ? 'today' : date === addDays(today(), 1) ? 'tomorrow' : 'day';
+  const whoOptions = [...people.map(p => [p.id, p.id === meId() ? 'Eu' : p.name, p.color]), ['', 'Qualquer um', '']];
+  openSheet(`<form class="n-form" id="chore-form">${sheetTop(c ? 'Editar' : 'Novo na Casa')}
+    <textarea name="text" rows="1" required maxlength="10000" placeholder="O que fazer" aria-label="O que fazer" ${c ? '' : 'autofocus'}>${esc(c?.text || '')}</textarea>
+    ${lists.length > 1 ? `<fieldset class="n-fieldset"><legend>Lista</legend><div class="n-chips">${lists.map(l => `<label class="n-chip"><input type="radio" name="list" value="${esc(l.id)}" ${l.id === listId ? 'checked' : ''}><span>${esc(l.name)}</span></label>`).join('')}</div></fieldset>` : `<input type="hidden" name="list" value="${esc(listId)}">`}
+    ${shared() ? `<fieldset class="n-fieldset"><legend>Quem faz</legend><div class="n-seg">${whoOptions.map(([v, l, color]) => `<label><input type="radio" name="who" value="${esc(v)}" ${v === who ? 'checked' : ''}><span>${color ? `<i class="c-who" style="background:${color}">${esc(l === 'Eu' ? me.name[0] : l[0])}</i>` : '<i class="c-who c-any"></i>'}${esc(l)}</span></label>`).join('')}</div></fieldset>` : '<input type="hidden" name="who" value="">'}
+    <fieldset class="n-fieldset"><legend>Quando</legend><div class="n-seg">${[['none', 'Sem dia'], ['today', 'Hoje'], ['tomorrow', 'Amanhã'], ['day', 'Outro dia']].map(([v, l]) => `<label><input type="radio" name="when" value="${v}" ${v === when ? 'checked' : ''}><span>${l}</span></label>`).join('')}</div></fieldset>
+    <div class="n-opts" data-dated>
+      <label class="n-opt" data-day-only>Data<input type="date" name="date" value="${when === 'day' ? date : addDays(today(), 2)}"></label>
+      <label class="n-opt">Repetir<select name="cycle"><option value="">Não repete</option>${Object.entries(CYCLES).map(([v, l]) => `<option value="${v}" ${c?.cycle === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    </div>
+    ${c && c.by ? `<p class="n-note">${shared() ? `${c.by === meId() ? 'Você adicionou' : `${esc(personName(c.by))} adicionou`} ${whenAgo(c.added || 0)}.` : ''}${c.done && c.doneBy ? ` ${c.doneBy === meId() ? 'Você fez' : `${esc(personName(c.doneBy))} fez`} ${whenAgo(c.doneAt)}.` : ''}</p>` : ''}
+    ${c ? '<div class="n-sheet-actions"><button type="button" class="n-btn n-gray n-danger" data-delete-chore>Excluir</button></div>' : ''}
+  </form>`, () => {
+    const form = $('#chore-form'), text = form.elements.text;
+    autosize(text); text.addEventListener('input', () => autosize(text));
+    const update = () => {
+      const w = form.elements.when.value;
+      $('[data-dated]', form).hidden = w === 'none';
+      $('[data-day-only]', form).hidden = w !== 'day';
+    };
+    form.addEventListener('change', e => { if (e.target.name === 'when') update(); });
+    update();
+    form.onsubmit = e => {
+      e.preventDefault();
+      const value = text.value.trim();
+      if (!value) return;
+      const w = form.elements.when.value;
+      const day = w === 'none' ? '' : w === 'today' ? today() : w === 'tomorrow' ? addDays(today(), 1) : form.elements.date.value;
+      if (w === 'day' && !day) { form.elements.date.focus(); return; }
+      const patch = {text: value, list: form.elements.list.value, who: form.elements.who.value, date: day, cycle: day ? form.elements.cycle.value : ''};
+      if (c) commit('chores', id, patch); else commit('chores', uid(), {...patch, done: false, added: Date.now()});
+      closeSheet();
+    };
+    $('[data-delete-chore]', form)?.addEventListener('click', () => {
+      deleteChores([id]);
+      closeSheet();
+    });
+  });
+}
+
+// Who added it and who did it are the server's to stamp; a copy keeps the rest.
+function deleteChores(ids) {
+  const copies = ids.map(id => state.chores[id]).filter(c => c && !c.deleted).map(({text, list, who, date, cycle, done, added}) => ({text, list, who: who || '', date: date || '', cycle: cycle || '', done: !!done, ...(added ? {added} : {})}));
+  if (!copies.length) return;
+  commitMany(ids.map(id => ({collection: 'chores', id, patch: {deleted: true}})));
+  toast(copies.length === 1 ? 'Excluído.' : `${copies.length} excluídos.`, () => {
+    commitMany(copies.map(patch => ({collection: 'chores', id: uid(), patch})));
+    toast('Exclusão desfeita.');
+  });
+}
+
+function listSheet(id) {
+  const l = id ? state.lists[id] : null;
+  const count = id ? liveChores(state, id).length : 0;
+  openSheet(`<form class="n-form" id="list-form">${sheetTop(l ? 'Lista' : 'Nova lista', l ? 'Salvar' : 'Criar')}
+    <input name="name" required maxlength="60" placeholder="Nome (ex.: Viagem, Presentes)" aria-label="Nome da lista" value="${esc(l?.name || '')}" ${l ? '' : 'autofocus'}>
+    ${l ? `<div class="n-sheet-actions"><button type="button" class="n-btn n-gray n-danger" data-delete-list>Excluir lista${count ? ` e ${plural(count, 'item', 'itens')}` : ''}</button></div>` : ''}
+  </form>`, () => {
+    const form = $('#list-form');
+    form.onsubmit = e => {
+      e.preventDefault();
+      const name = form.elements.name.value.trim().replace(/\s+/g, ' ');
+      if (!name) return;
+      if (l) commit('lists', id, {name});
+      else { const newId = uid(); commit('lists', newId, {name, order: Math.max(0, ...casaLists().map(x => x.order ?? 0)) + 1}); closeSheet(); openCasa(newId); return; }
+      closeSheet();
+    };
+    $('[data-delete-list]', form)?.addEventListener('click', () => {
+      if (!confirm(`Excluir a lista ${l.name}${count ? ` e ${plural(count, 'item', 'itens')}` : ''} para todos?`)) return;
+      const chores = liveChores(state, id).map(c => c.id);
+      commitMany([{collection: 'lists', id, patch: {deleted: true}}, ...chores.map(cid => ({collection: 'chores', id: cid, patch: {deleted: true}}))]);
+      closeSheet();
+      if (desktop()) { casaView = null; render(); } else navigation.back();
+    });
+  });
+}
+
+function noteSheet(id) {
+  const n = id ? state.notes[id] : null;
+  openSheet(`<form class="n-form" id="note-form">${sheetTop(n ? 'Nota fixa' : 'Nova nota fixa')}
+    <input name="title" maxlength="200" placeholder="Título (ex.: Wi-Fi)" aria-label="Título" value="${esc(n?.title || '')}" ${n ? '' : 'autofocus'}>
+    <textarea name="body" rows="4" maxlength="10000" placeholder="Texto" aria-label="Texto">${esc(n?.body || '')}</textarea>
+    ${n?.editedBy && shared() ? `<p class="n-note">${n.editedBy === meId() ? 'Você editou' : `${esc(personName(n.editedBy))} editou`} ${whenAgo(n.edited)}.</p>` : ''}
+    ${n ? '<div class="n-sheet-actions"><button type="button" class="n-btn n-gray n-danger" data-delete-note>Excluir nota</button></div>' : ''}
+  </form>`, () => {
+    const form = $('#note-form'), body = form.elements.body;
+    autosize(body); body.addEventListener('input', () => autosize(body));
+    form.onsubmit = e => {
+      e.preventDefault();
+      const title = form.elements.title.value.trim(), text = body.value.replace(/\s+$/, '');
+      if (!title && !text.trim()) { closeSheet(); return; }
+      if (n) { if (title !== (n.title || '') || text !== (n.body || '')) commit('notes', id, {title, body: text}); }
+      else commit('notes', uid(), {title, body: text, order: Date.now() % 1e9, added: Date.now()});
+      closeSheet();
+    };
+    $('[data-delete-note]', form)?.addEventListener('click', () => {
+      commit('notes', id, {deleted: true});
+      closeSheet();
+      // Deleted records stay deleted; undoing brings back a copy.
+      const {title, body: text, order} = n;
+      toast('Nota excluída.', () => { commit('notes', uid(), {title: title || '', body: text || '', order: order ?? 0, added: Date.now()}); toast('Exclusão desfeita.'); });
+    });
+  });
+}
+
+// The Casa section of Hoje: chores for you (or anyone) due today or late, and the ones checked today.
+function hojeCasaGroup() {
+  if (!tabPrefs(state).compras) return '';
+  const list = hojeChores().sort((a, b) => (settling.has(a.id) ? !a.done : !!a.done) - (settling.has(b.id) ? !b.done : !!b.done) || (a.date || '').localeCompare(b.date || ''));
+  if (!list.length) return '';
+  return `<section><div class="n-group-h"><h2><span class="c-house">${ICONS.casa}</span>Casa</h2><span>${doneCount(list)} de ${list.length}</span></div><div class="n-list">${list.map(c => choreRow(c, {showList: true, showToday: false})).join('')}</div></section>`;
+}
+
+// ---------- Casa on the computer ----------
+
+function casaSidebar() {
+  if (!tabPrefs(state).compras) return '';
+  const on = id => tab === 'compras' && casaView === id ? 'is-on' : '';
+  const toBuy = listed(state).filter(i => !i.done).length;
+  const mine = forYou().length;
+  const rows = [
+    ...(mine ? [`<button class="d-sec ${on('foryou')}" data-casa-open="foryou"><i class="d-dot" style="background:${me?.color || 'var(--yellow)'}"></i><span>Pra você</span><em>${mine}</em></button>`] : []),
+    `<button class="d-sec ${on('compras')}" data-casa-open="compras"><i class="d-dot" style="background:var(--yellow)"></i><span>Compras</span><em>${toBuy || ''}</em></button>`,
+    ...casaLists().map(l => { const n = liveChores(state, l.id).filter(c => !c.done).length; return `<button class="d-sec ${on(l.id)}" data-casa-open="${esc(l.id)}"><i class="d-dot" style="background:${listColor(l.id)}"></i><span>${esc(l.name)}</span><em>${n || ''}</em></button>`; }),
+    '<button class="d-sec c-side-new" data-new-list><span>Nova lista</span></button>',
+  ];
+  const faces = shared() ? `<span class="c-faces">${people.map(p => `<i style="background:${p.color}">${esc(p.name[0])}</i>`).join('')}</span>` : '';
+  return `<h2 class="d-side-h c-side-h"><span>Casa</span>${faces}</h2><div class="d-secs">${rows.join('')}</div>`;
+}
+
+function casaRail() {
+  const news = shared() ? casaNews().slice(0, 8) : [];
+  const feed = news.map(e => `<div class="c-ev"><i class="c-who" style="background:${personColor(e.who)}">${esc(person(e.who)?.name[0] || '?')}</i><div>${esc(person(e.who)?.name || '')} ${e.text}<small>${whenAgo(e.at)} · ${esc(e.where)}</small></div></div>`).join('');
+  const notes = live(state, 'notes').filter(n => n.title || n.body).sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || (a.added || 0) - (b.added || 0));
+  const noteRows = notes.map(n => `<button class="d-mini" data-edit-note="${esc(n.id)}"><span>${esc(n.title || n.body.split('\n')[0])}${n.title && n.body ? `<small class="c-note-body">${esc(n.body.replace(/\s*\n\s*/g, ' · '))}</small>` : ''}</span></button>`).join('');
+  return `<aside class="d-rail" aria-label="Casa">
+    ${shared() ? `<section class="d-card"><div class="d-card-h"><h2>Novidades</h2></div>${feed ? `<div class="c-feed">${feed}</div>` : '<p class="d-card-empty">Nada novo nos últimos 7 dias.</p>'}</section>` : ''}
+    <section class="d-card"><div class="d-card-h"><h2>Notas fixas</h2><button class="n-link" data-new-note>Nova</button></div>${noteRows || '<p class="d-card-empty">Wi-Fi, tamanhos, senha do portão…</p>'}</section>
+  </aside>`;
+}
+
+function deskCasa() {
+  markCasaSeen();
+  if (casaView === 'compras') return deskCompras();
+  const known = casaView === 'foryou' || (casaView && state.lists[casaView] && !state.lists[casaView].deleted);
+  if (!known) casaView = null;
+  if (!casaView) {
+    return `${toolbar('Casa', esc(casaNames()), deskAdd('Novo', 'data-new-chore'))}<div class="d-split"><div class="d-main d-legacy">${statusHtml()}${forYouGroup()}<div class="n-group-h"><h2>Listas</h2></div>${casaTiles()}</div>${casaRail()}</div>`;
+  }
+  if (casaView === 'foryou') {
+    const mine = forYou();
+    return `${toolbar('Pra você', `Casa · ${plural(mine.length, 'pedido', 'pedidos')}`, deskAdd('Novo', 'data-new-chore'))}<div class="d-split"><div class="d-main">${statusHtml()}${mine.length ? `<div class="n-list">${mine.map(c => choreRow(c, {showList: true})).join('')}</div>` : '<p class="d-empty">Ninguém pediu nada pra você.</p>'}</div>${casaRail()}</div>`;
+  }
+  const {html, count} = choreListBody(casaView);
+  const end = `<button class="d-tool" data-edit-list="${esc(casaView)}">${ICONS.more}<span>Lista</span></button>${deskAdd('Novo', `data-new-chore="${esc(casaView)}"`)}`;
+  return `${toolbar(esc(listName(casaView)), `Casa · ${count ? plural(count, 'pendente', 'pendentes') : 'nada pendente'}`, end)}<div class="d-split"><div class="d-main">${statusHtml()}${html}</div>${casaRail()}</div>`;
+}
 function viewAjustes() {
   const repeats = live(state, 'repeats').length;
   const monthly = repeatingBills(state).length;
   const account = protectedServer && me ? `<div class="n-group-h"><h2>Conta</h2></div>
     <div class="n-list"><div class="n-row n-plain"><span class="n-person-dot" style="background:${me.color}"></span><span class="n-text">${esc(me.name)}</span><button class="n-link n-danger" data-logout>Sair</button></div></div>` : '';
-  return `${statusHtml()}<div class="n-top"></div><h1 class="n-title">Ajustes</h1>${account}
+  const back = desktop() ? '' : `<button class="n-link n-back" data-tab="hoje">${ICONS.prev}Hoje</button>`;
+  return `${statusHtml()}<div class="n-top">${back}</div><h1 class="n-title">Ajustes</h1>${account}
     <div class="n-group-h"><h2>Seções</h2></div>
     <div class="n-list" id="section-list">${sections().map(s => `<div class="n-row n-plain" data-section-row="${s.id}"><button class="n-text" data-edit-section="${s.id}">${esc(s.name)}</button><button class="n-handle" data-drag="${s.id}" aria-label="Reordenar ${esc(s.name)}. Use as setas para mover.">≡</button></div>`).join('')}
       <div class="n-row n-plain"><button class="n-text n-accent" data-new-section>Nova seção</button></div></div>
     <p class="n-note">A ordem aqui é a ordem em Hoje e no Backlog${desktop() ? ' e define a cor de cada seção' : ''}.</p>
     <div class="n-group-h"><h2>Abas</h2></div>
-    <div class="n-list">${[['reunioes', 'Agenda'], ['backlog', 'Backlog'], ['compras', 'Compras'], ['contas', 'Contas']].map(([id, label]) => `<label class="n-row n-plain"><span class="n-text">${label}</span><input type="checkbox" class="n-switch" data-tab-pref="${id}" ${tabPrefs(state)[id] ? 'checked' : ''}></label>`).join('')}</div>
-    <p class="n-note">Hoje e Ajustes sempre aparecem. A Agenda mostra tudo que tem horário; com ela ligada, as reuniões saem do Hoje e ficam só lá.</p>
+    <div class="n-list">${[['reunioes', 'Agenda'], ['backlog', 'Backlog'], ['compras', 'Casa'], ['contas', 'Contas']].map(([id, label]) => `<label class="n-row n-plain"><span class="n-text">${label}</span><input type="checkbox" class="n-switch" data-tab-pref="${id}" ${tabPrefs(state)[id] ? 'checked' : ''}></label>`).join('')}</div>
+    <p class="n-note">Hoje sempre aparece; Ajustes abre pelo seu nome no topo de Hoje. A Agenda mostra tudo que tem horário; com ela ligada, as reuniões saem do Hoje e ficam só lá.</p>
     <div class="n-group-h"><h2>Repetições</h2></div>
     <div class="n-list">
       <div class="n-row n-plain"><button class="n-text" data-push="repeats">Tarefas que se repetem</button><span class="n-meta">${repeats}</span><span class="n-chev" aria-hidden="true">›</span></div>
@@ -591,26 +945,28 @@ function pageMonthly() {
   return {html: `<div class="n-top"><button class="n-link" data-back>‹ Ajustes</button></div><h1 class="n-title">Contas recorrentes</h1><p class="n-sub">Voltam no ritmo de cada uma, como não pagas.</p>${rows ? `<div class="n-list n-spaced">${rows}</div>` : '<div class="n-empty"><p>Nenhuma conta se repete.</p></div>'}`, action: ''};
 }
 
-const PAGES = {history: pageHistory, repeats: pageRepeats, monthly: pageMonthly};
+const PAGES = {history: pageHistory, repeats: pageRepeats, monthly: pageMonthly, casa: pageCasa};
 
 function render() {
   // Replacing the rows mid-drag would cancel the drag; it renders again when it ends.
   if (dragging || dragIds) return;
   const screen = $('.page[data-name="root"] .n-screen'), wide = desktop();
   document.body.dataset.layout = wide ? 'desktop' : 'phone';
+  // "Anyone" in Casa is drawn half in each person's color.
+  if (people.length > 1) { document.body.style.setProperty('--who-a', people[0].color); document.body.style.setProperty('--who-b', people[1].color); }
   // A tab turned off (here or on another device) cannot stay selected.
   if (!visibleTabs().some(([id]) => id === tab)) tab = 'hoje';
   // Paged to tomorrow and the day turned: that is today now.
   if (hojeDate === today()) hojeDate = null;
   if (railDate === today()) railDate = null;
   // Re-rendering replaces the add fields; keep what is being typed and the keyboard open.
-  const typing = ['#add-item input', '#quick-task input'].map(sel => { const field = $(sel); return field && {sel, value: field.value, focused: document.activeElement === field}; }).filter(Boolean);
+  const typing = ['#add-item input', '#add-chore input', '#quick-task input'].map(sel => { const field = $(sel); return field && {sel, value: field.value, focused: document.activeElement === field}; }).filter(Boolean);
   const searching = document.activeElement?.matches('[data-bill-search]');
-  if (screen) screen.innerHTML = (wide ? DESK_VIEWS : {hoje: viewHoje, reunioes: viewReunioes, backlog: viewBacklog, compras: viewCompras, contas: viewContas, ajustes: viewAjustes})[tab]();
+  if (screen) screen.innerHTML = (wide ? DESK_VIEWS : {hoje: viewHoje, reunioes: viewReunioes, backlog: viewBacklog, compras: viewCasa, contas: viewContas, ajustes: viewAjustes})[tab]();
   for (const {sel, value, focused} of typing) { const field = $(sel); if (!field) continue; field.value = value; if (focused) field.focus({preventScroll: true}); }
   if ($('#quick-task')) drawQuickChips();
   if (searching) $('[data-bill-search]')?.focus({preventScroll: true});
-  $('#tabbar').innerHTML = wide ? sidebarHtml() : visibleTabs().map(([id, label]) => `<button class="n-tab ${tab === id ? 'is-on' : ''}" data-tab="${id}" ${tab === id ? 'aria-current="page"' : ''}>${ICONS[id]}<span>${label}</span>${id === 'backlog' && overdue().length ? '<i class="n-tab-dot" aria-label="Há tarefas que ficaram para trás"></i>' : ''}</button>`).join('');
+  $('#tabbar').innerHTML = wide ? sidebarHtml() : mainTabs().map(([id, label]) => `<button class="n-tab ${tab === id ? 'is-on' : ''}" data-tab="${id}" ${tab === id ? 'aria-current="page"' : ''}>${tabIcon(id)}<span>${label}</span>${id === 'backlog' && overdue().length ? '<i class="n-tab-dot" aria-label="Há tarefas que ficaram para trás"></i>' : ''}${id === 'compras' && casaUnseen() ? '<i class="n-tab-dot c-tab-dot" aria-label="Novidades na Casa"></i>' : ''}</button>`).join('');
   let float = '';
   if (wide) float = tab === 'backlog' && selected.size ? backlogActions() : '';
   else if (tab === 'backlog' && selecting) float = `<button class="n-btn n-yellow n-wide" data-move-selected ${selected.size ? '' : 'disabled'}>${selected.size ? `Mover ${selected.size} para hoje` : 'Selecione tarefas'}</button>`;
@@ -620,7 +976,7 @@ function render() {
     float = hojeDate > today() ? `<button class="n-quick" data-new-on-day="${hojeDate}">${ICONS.plus}<span>Nova tarefa</span></button>` : n ? `<button class="n-btn n-yellow n-wide" data-carry-day="${hojeDate}">${n === 1 ? 'Trazer 1 pendente para hoje' : `Trazer ${n} pendentes para hoje`}</button>` : '';
   }
   else if (tab === 'reunioes') float = `<button class="n-quick" data-new-meeting>${ICONS.plus}<span>Nova reunião</span></button>`;
-  else if ((tab === 'hoje' && todayTasks().length) || (tab === 'backlog' && (backlog().length || scheduled().length || overdue().length))) float = `<button class="n-quick" data-new-task>${ICONS.plus}<span>Nova tarefa</span></button>`;
+  else if ((tab === 'hoje' && (todayTasks().length || hojeCasaGroup())) || (tab === 'backlog' && (backlog().length || scheduled().length || overdue().length))) float = `<button class="n-quick" data-new-task>${ICONS.plus}<span>Nova tarefa</span></button>`;
   $('#float').innerHTML = float;
   document.body.dataset.float = float ? 'yes' : 'no';
   if (sub && document.contains(sub.el)) {
@@ -634,6 +990,8 @@ function render() {
 function switchTab(id) {
   // The Hoje tab always comes back to today.
   if (id === 'hoje') hojeDate = railDate = null;
+  // The Casa tab (or its sidebar entry) always opens on the overview.
+  if (id === 'compras') casaView = null;
   if (id !== tab) { tab = id; selecting = false; selected.clear(); cursor = null; }
   // The sidebar stays visible over secondary pages; choosing an area leaves them.
   if (desktop() && navigation.current !== 'root') navigation.back();
@@ -1324,7 +1682,16 @@ document.addEventListener('click', e => {
   else if ('close' in d) closeSheet();
   else if ('back' in d) navigation.back();
   else if (d.toggle && d.collection === 'tasks' && projected(d.toggle)) { const {id, ...fields} = projected(d.toggle); commit('tasks', id, {...fields, done: true}); }
-  else if (d.toggle) { const c = d.collection; c === 'tasks' ? toggleTask(d.toggle) : c === 'shopping' ? toggleCart(d.toggle) : commit(c, d.toggle, {done: !state[c][d.toggle].done}); }
+  else if (d.toggle) { const c = d.collection; c === 'tasks' ? toggleTask(d.toggle) : c === 'shopping' ? toggleCart(d.toggle) : c === 'chores' ? toggleChore(d.toggle) : commit(c, d.toggle, {done: !state[c][d.toggle].done}); }
+  else if (d.casaOpen) openCasa(d.casaOpen);
+  else if (d.casaFilter) { casaFilter = d.casaFilter; render(); }
+  else if (d.editChore) choreSheet({id: d.editChore});
+  else if ('newChore' in d) choreSheet({list: d.newChore || (casaView !== 'compras' && casaView !== 'foryou' ? casaView : null)});
+  else if ('newList' in d) listSheet();
+  else if (d.editList) listSheet(d.editList);
+  else if ('newNote' in d) noteSheet();
+  else if (d.editNote) noteSheet(d.editNote);
+  else if (d.clearDone) deleteChores(liveChores(state, d.clearDone).filter(c => c.done).map(c => c.id));
   else if (d.editTask && projected(d.editTask)) { const {id, ...fields} = projected(d.editTask); commit('tasks', id, fields).then(() => taskSheet({id})); }
   else if (d.editTask) taskSheet({id: d.editTask});
   else if ('newTask' in d) tab === 'hoje' && hojeDate ? newTaskOn(hojeDate) : taskSheet({when: tab === 'backlog' ? 'backlog' : 'today'});
@@ -1657,6 +2024,15 @@ document.addEventListener('touchmove', e => { if (rowDrag?.active) e.preventDefa
 document.addEventListener('contextmenu', e => { if (rowDrag && !desktop()) e.preventDefault(); });
 addEventListener('keydown', e => { if (e.key === 'Escape' && rowDrag) endRowDrag(); });
 
+// Casa lists: Return adds (with @who and the day parsed) and keeps the keyboard open.
+document.addEventListener('submit', e => {
+  if (e.target.id !== 'add-chore') return;
+  e.preventDefault();
+  const input = e.target.elements.entry;
+  addChore(input.value, e.target.dataset.list);
+  input.value = '';
+  input.focus({preventScroll: true});
+});
 // Compras: Return adds the item and keeps the keyboard open for the next one.
 document.addEventListener('submit', e => {
   if (e.target.id !== 'add-item') return;
@@ -1697,14 +2073,14 @@ const mainTabs = () => visibleTabs().filter(([id]) => id !== 'ajustes');
 
 function sidebarHtml() {
   const month = today().slice(0, 7);
-  const counts = {hoje: todayTasks().filter(t => !t.done).length, reunioes: todayMeetings().filter(t => !t.done).length, backlog: backlog().length, compras: listed(state).filter(i => !i.done).length, contas: live(state, 'bills').filter(b => b.month === month && !b.done).length};
-  const nav = mainTabs().map(([id, label], i) => `<button class="d-nav ${tab === id ? 'is-on' : ''}" data-tab="${id}" ${id === 'hoje' ? 'data-drop-today' : ''} ${tab === id ? 'aria-current="page"' : ''} title="${label} (${KEY}${i + 1})">${ICONS[id]}<span>${label}</span><em>${counts[id] || ''}</em></button>`).join('');
+  const counts = {hoje: todayTasks().filter(t => !t.done).length, reunioes: todayMeetings().filter(t => !t.done).length, backlog: backlog().length, compras: forYou().length, contas: live(state, 'bills').filter(b => b.month === month && !b.done).length};
+  const nav = mainTabs().map(([id, label], i) => `<button class="d-nav ${tab === id ? 'is-on' : ''}" data-tab="${id}" ${id === 'hoje' ? 'data-drop-today' : ''} ${tab === id ? 'aria-current="page"' : ''} title="${label} (${KEY}${i + 1})">${tabIcon(id)}<span>${label}</span><em>${counts[id] || ''}</em></button>`).join('');
   const pending = live(state, 'tasks').filter(t => !t.done && (t.date === '' || t.date === today()));
   const secs = sections().map(s => { const n = pending.filter(t => t.section === s.id).length; return `<button class="d-sec" data-find="${esc(s.name)}" title="Buscar em ${esc(s.name)}">${dot(s.id)}<span>${esc(s.name)}</span><em>${n || ''}</em></button>`; }).join('');
   const sync = needsLogin ? '<button class="d-sync is-off" data-login>Entre para sincronizar</button>'
     : `<span class="d-sync ${online ? '' : 'is-off'}">${!online ? 'Sem conexão' : queue.length ? 'Enviando…' : 'Sincronizado'}</span>`;
   const who = me ? `<span class="n-avatar d-avatar" style="background:${me.color || 'var(--yellow)'}" aria-hidden="true">${esc(me.name[0])}</span><span class="d-who"><b>${esc(me.name)}</b>${sync}</span>` : `<span class="d-who">${sync}</span>`;
-  return `<div class="d-side-top"></div><div class="d-navs">${nav}</div><h2 class="d-side-h">Seções</h2><div class="d-secs">${secs}</div>
+  return `<div class="d-side-top"></div><div class="d-navs">${nav}</div>${casaSidebar()}<h2 class="d-side-h">Seções</h2><div class="d-secs">${secs}</div>
     <div class="d-side-foot">${who}<button class="d-gear ${tab === 'ajustes' ? 'is-on' : ''}" data-tab="ajustes" aria-label="Ajustes" title="Ajustes (${KEY},)">${ICONS.ajustes}</button></div>`;
 }
 
@@ -1725,7 +2101,8 @@ function deskHoje() {
   }
   const example = sections()[0]?.name.split(' ')[0] || 'seção';
   const quick = `<form class="d-quick" id="quick-task">${ICONS.plus}<input name="entry" placeholder="Nova tarefa para hoje. Ex.: Revisar PR 15h #${esc(example)}" autocomplete="off" maxlength="10000" aria-label="Nova tarefa para hoje" aria-describedby="quick-chips"><kbd>N</kbd></form><div class="d-chips" id="quick-chips" aria-live="polite"></div>`;
-  const body = tasks.length ? sectionGroups(tasks, 'edit', list => `${doneCount(list)} de ${list.length}`) : '<p class="d-empty">Nada para hoje. Escreva acima e tecle Return.</p>';
+  const casa = hojeCasaGroup();
+  const body = tasks.length || casa ? sectionGroups(tasks, 'edit', list => `${doneCount(list)} de ${list.length}`) + casa : '<p class="d-empty">Nada para hoje. Escreva acima e tecle Return.</p>';
   return `${toolbar('Hoje', sub, end)}<div class="d-split"><div class="d-main">${statusHtml()}${hojeBanner()}${quick}${body}</div>${hojeRail()}</div>`;
 }
 
@@ -1762,8 +2139,8 @@ function hojeRail() {
   }
   if (prefs.compras) {
     const {toBuy} = shoppingParts(), color = id => people.find(p => p.id === id)?.color || 'var(--secondary)';
-    const rows = toBuy.slice(0, 5).map(i => `<button class="d-mini" data-tab="compras"><i class="d-ring" style="--who:${color(i.by)}"></i><span>${esc(i.text)}</span></button>`).join('');
-    cards.push(`<section class="d-card"><div class="d-card-h"><h2>Compras</h2><button class="n-link" data-tab="compras">${toBuy.length > 5 ? `Mais ${toBuy.length - 5}` : 'Abrir'}</button></div>${rows || '<p class="d-card-empty">Lista vazia.</p>'}</section>`);
+    const rows = toBuy.slice(0, 5).map(i => `<button class="d-mini" data-casa-open="compras"><i class="d-ring" style="--who:${color(i.by)}"></i><span>${esc(i.text)}</span></button>`).join('');
+    cards.push(`<section class="d-card"><div class="d-card-h"><h2>Compras</h2><button class="n-link" data-casa-open="compras">${toBuy.length > 5 ? `Mais ${toBuy.length - 5}` : 'Abrir'}</button></div>${rows || '<p class="d-card-empty">Lista vazia.</p>'}</section>`);
   }
   return `<aside class="d-rail" aria-label="Resumo do dia">${cards.join('')}</aside>`;
 }
@@ -1866,9 +2243,10 @@ function deskCompras() {
 }
 
 const deskAjustes = () => `${toolbar('Ajustes', '')}<div class="d-main d-narrow d-legacy">${viewAjustes()}</div>`;
-const DESK_VIEWS = {hoje: deskHoje, reunioes: deskReunioes, backlog: deskBacklog, compras: deskCompras, contas: deskContas, ajustes: deskAjustes};
+const DESK_VIEWS = {hoje: deskHoje, reunioes: deskReunioes, backlog: deskBacklog, compras: deskCasa, contas: deskContas, ajustes: deskAjustes};
 
 function newTask() {
+  if (tab === 'compras') { const field = $('#add-chore input, #add-item input'); if (field) field.focus(); else choreSheet(); return; }
   if (tab === 'hoje' && hojeDate) return newTaskOn(hojeDate);
   if (tab === 'hoje' && $('#quick-task input')) return $('#quick-task input').focus();
   taskSheet(tab === 'reunioes' ? {when: 'today', meeting: true} : {when: tab === 'backlog' ? 'backlog' : 'today'});
@@ -1890,7 +2268,7 @@ function deleteTasks(ids) {
 
 function finderItems(q) {
   const key = itemKey(q), prefs = tabPrefs(state);
-  const go = [...mainTabs().map(([id, label], i) => ({group: 'Ir para', icon: ICONS[id], text: label, hint: `${KEY}${i + 1}`, run: () => switchTab(id)})), {group: 'Ir para', icon: ICONS.ajustes, text: 'Ajustes', hint: `${KEY},`, run: () => switchTab('ajustes')}];
+  const go = [...mainTabs().map(([id, label], i) => ({group: 'Ir para', icon: tabIcon(id), text: label, hint: `${KEY}${i + 1}`, run: () => switchTab(id)})), {group: 'Ir para', icon: ICONS.ajustes, text: 'Ajustes', hint: `${KEY},`, run: () => switchTab('ajustes')}];
   const actions = [
     {group: 'Ações', icon: ICONS.plus, text: 'Nova tarefa', hint: 'N', run: () => taskSheet({when: 'today'})},
     prefs.reunioes && {group: 'Ações', icon: ICONS.reunioes, text: 'Nova reunião', run: () => taskSheet({when: 'today', meeting: true})},
@@ -1903,8 +2281,12 @@ function finderItems(q) {
     .map(t => ({group: t.meeting ? 'Reuniões' : 'Tarefas', color: sectionColor(t.section), text: t.text, sub: `${where(t)} · ${sectionName(t.section)}${t.time ? ` · ${timeLabel(t)}` : ''}${t.done ? ' · feita' : ''}`, run: () => taskSheet({id: t.id})}));
   const repeats = live(state, 'repeats').map(r => ({group: 'Repetições', color: sectionColor(r.section), text: r.text, sub: `${repeatLabel(r)}${r.time ? `, ${timeLabel(r)}` : ''} · ${sectionName(r.section)}`, run: () => taskSheet({repeatId: r.id})}));
   const bills = prefs.contas ? live(state, 'bills').filter(b => b.month === today().slice(0, 7)).map(b => ({group: 'Contas', icon: ICONS.contas, text: b.text, sub: `${b.done ? 'Paga' : b.due ? `Dia ${b.due}` : 'Sem dia'} · ${money(b.amount)}`, run: () => billSheet(b.id)})) : [];
-  const shop = prefs.compras ? listed(state).map(i => ({group: 'Compras', icon: ICONS.compras, text: i.text, sub: i.done ? 'No carrinho' : 'Para comprar', run: () => switchTab('compras')})) : [];
-  return [...go, ...actions, ...tasks, ...repeats, ...bills, ...shop].filter(x => itemKey(`${x.text} ${x.sub || ''} ${x.group}`).includes(key)).slice(0, 40);
+  const shop = prefs.compras ? listed(state).map(i => ({group: 'Compras', icon: ICONS.compras, text: i.text, sub: i.done ? 'No carrinho' : 'Para comprar', run: () => openCasa('compras')})) : [];
+  const casa = prefs.compras ? [
+    ...liveChores(state).filter(c => !c.done).map(c => ({group: 'Casa', icon: ICONS.casa, text: c.text, sub: `${listName(c.list)}${c.date ? ` · ${choreDay(c.date)}` : ''}${shared() ? ` · ${c.who ? personName(c.who) : 'qualquer um'}` : ''}`, run: () => choreSheet({id: c.id})})),
+    ...live(state, 'notes').filter(n => n.title || n.body).map(n => ({group: 'Notas fixas', icon: ICONS.casa, text: n.title || n.body.split('\n')[0], sub: n.title ? n.body.replace(/\s*\n\s*/g, ' · ').slice(0, 80) : '', run: () => noteSheet(n.id)})),
+  ] : [];
+  return [...go, ...actions, ...tasks, ...repeats, ...bills, ...shop, ...casa].filter(x => itemKey(`${x.text} ${x.sub || ''} ${x.group}`).includes(key)).slice(0, 40);
 }
 function openFinder(q = '') {
   closeMenu();

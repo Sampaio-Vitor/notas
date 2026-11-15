@@ -5,7 +5,7 @@ import {resolve, dirname, extname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {randomBytes, randomUUID, createHmac, timingSafeEqual} from 'node:crypto';
 import {generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse} from '@simplewebauthn/server';
-import {initialState, apply, rollover, migrate, normalize, itemKey, itemId, listed, billOpsConflict, cardBillOps} from './public/model.js';
+import {initialState, apply, SHARED_COLLECTIONS, rollover, migrate, normalize, itemKey, itemId, listed, billOpsConflict, cardBillOps} from './public/model.js';
 import {SPACE_TOOLS, SPACE_TOOL_NAMES, spaceTool} from './mcp-espaco.mjs';
 import {validate} from './validacao.mjs';
 
@@ -48,7 +48,7 @@ if (!db.prepare('PRAGMA table_info(passkeys)').all().some(c => c.name === 'user_
 // Passkeys created before accounts existed belong to the first person.
 db.prepare('UPDATE passkeys SET user_id=? WHERE user_id IS NULL').run(owner.id);
 
-// One state per person plus the shared "casa" space (only `shopping` is used there).
+// One state per person plus the shared "casa" space (shopping, lists, chores and notes).
 const SHARED = 'casa';
 const spaces = new Map();
 const persist = id => db.prepare('INSERT OR REPLACE INTO spaces VALUES (?,?)').run(id, JSON.stringify(spaces.get(id)));
@@ -63,6 +63,9 @@ function loadSpace(id, fallback) {
 const legacy = db.prepare('SELECT value FROM state WHERE id=1').get()?.value;
 for (const u of users) loadSpace(u.id, () => u === owner && legacy ? JSON.parse(legacy) : initialState());
 loadSpace(SHARED, () => normalize({}));
+// Casa starts with one list for chores; deleting it keeps it deleted.
+if (!spaces.get(SHARED).lists.afazeres) { apply(spaces.get(SHARED), {collection: 'lists', id: 'afazeres', patch: {name: 'Afazeres', order: 0}}); persist(SHARED); }
+const sharedCollection = c => SHARED_COLLECTIONS.includes(c);
 
 // ---------- Sessions ----------
 // The signing key lives in the database so restarts and deploys keep sessions valid.
@@ -118,8 +121,8 @@ function ensureDay() {
 ensureDay();
 setInterval(ensureDay, 30000).unref();
 
-// What a person sees: their own space with the shared shopping list in it.
-const viewFor = user => ({...spaces.get(user.id), shopping: spaces.get(SHARED).shopping});
+// What a person sees: their own space with Casa (the shared collections) in it.
+const viewFor = user => ({...spaces.get(user.id), ...Object.fromEntries(SHARED_COLLECTIONS.map(c => [c, spaces.get(SHARED)[c]]))});
 
 // Applies operations to one space in a single transaction and logs them with `who`
 // (the person, plus the agent when it came through MCP). Repeated opIds are skipped.
@@ -180,6 +183,24 @@ if (finance) { syncCards(); setInterval(syncCards, 10 * 60000).unref(); }
 // was a mistake: the record is cleared. Clearing the cart or removing the item keeps it, as
 // the last time it was bought.
 const BOUGHT_SLACK = 30 * 86400000;
+// Casa records say who created them, who checked a chore and who last edited a note; the
+// server decides that, never the client. `added` comes from the app (it may be offline) when plausible.
+function stampCasa(ops, user) {
+  const casa = spaces.get(SHARED), now = Date.now(), created = new Set();
+  for (const {collection, id, patch} of ops) {
+    if (!['lists', 'chores', 'notes'].includes(collection)) continue;
+    for (const k of ['by', 'doneBy', 'doneAt', 'editedBy', 'edited']) delete patch[k];
+    const fresh = !casa[collection][id] && !created.has(`${collection}:${id}`);
+    if (fresh) {
+      created.add(`${collection}:${id}`);
+      if (collection !== 'lists') { patch.by = user; if (!(typeof patch.added === 'number' && patch.added > now - BOUGHT_SLACK && patch.added <= now + 60000)) patch.added = now; }
+    } else delete patch.added;
+    if (collection === 'chores' && patch.done === true) { patch.doneBy = user; patch.doneAt = now; }
+    if (collection === 'chores' && patch.done === false) { patch.doneBy = ''; patch.doneAt = 0; }
+    if (collection === 'notes' && ('title' in patch || 'body' in patch)) { patch.editedBy = user; patch.edited = now; }
+  }
+}
+
 function stampBought(patch, user) {
   delete patch.boughtBy;
   const now = Date.now();
@@ -488,12 +509,13 @@ const server = http.createServer(async (req, res) => {
         const request = await body(req), ops = Array.isArray(request) ? request : [request];
         // `invalid`: sending it again will never work, so the app drops it instead of retrying forever.
         if (!ops.length || ops.length > 500 || !ops.every(validate)) return json(400, {error: 'Alteração inválida', invalid: true});
-        const space = ops[0].collection === 'shopping' ? SHARED : user.id;
-        if (ops.some(op => (op.collection === 'shopping' ? SHARED : user.id) !== space)) return json(400, {error: 'Alteração inválida', invalid: true});
+        const space = sharedCollection(ops[0].collection) ? SHARED : user.id;
+        if (ops.some(op => (sharedCollection(op.collection) ? SHARED : user.id) !== space)) return json(400, {error: 'Alteração inválida', invalid: true});
         const fresh = ops.filter(op => !db.prepare('SELECT id FROM operations WHERE id=?').get(op.opId));
         if (billOpsConflict(spaces.get(space), fresh)) return json(409, {error: 'As contas mudaram em outro aparelho. Confira os dados e tente novamente.'});
         // Who added an item is decided here, not by the client.
         for (const op of ops) if (op.collection === 'shopping') { delete op.patch.by; if (op.patch.listed === true) op.patch.by = user.id; stampBought(op.patch, user.id); }
+        stampCasa(ops, user.id);
         commit(ops, space, {user: user.id});
         return json(200, {ok: true});
       }

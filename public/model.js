@@ -1,7 +1,8 @@
 // Shared by server and client: state shape, patch application and the
 // daily/monthly rollover. Every change is a patch {collection,id,patch}.
-// `shopping` lives in the shared space; everything else is per person.
-export const COLLECTIONS = ['sections', 'tasks', 'repeats', 'bills', 'billRules', 'days', 'months', 'meetings', 'shopping', 'prefs', 'cards', 'cardLinks'];
+// The shared space (Casa) holds `shopping`, `lists`, `chores` and `notes`; everything else is per person.
+export const SHARED_COLLECTIONS = ['shopping', 'lists', 'chores', 'notes'];
+export const COLLECTIONS = ['sections', 'tasks', 'repeats', 'bills', 'billRules', 'days', 'months', 'meetings', 'shopping', 'prefs', 'cards', 'cardLinks', 'lists', 'chores', 'notes'];
 
 export const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 export const weekday = date => new Date(`${date}T12:00:00`).getDay();
@@ -419,4 +420,65 @@ export function meetingLanes(items) {
   }
   close();
   return placed;
+}
+
+// ---- Casa: lists, chores and pinned notes shared by everyone in APP_USERS.
+// A chore has `who` (a person's id, or '' for anyone), an optional `date` and a `cycle`
+// ('' or w1, w2, m1, m3, m6, y1). Checking a cycling chore creates the next one.
+export const CYCLES = {w1: 'Toda semana', w2: 'A cada 2 semanas', m1: 'Todo mês', m3: 'A cada 3 meses', m6: 'A cada 6 meses', y1: 'Todo ano'};
+const isoDay = d => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+export const shiftDay = (date, n) => { const d = new Date(`${date}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return isoDay(d); };
+// Months keep the day, clamped to the month's last day (31 Jan + 1 month = 28/29 Feb).
+function shiftDate(date, months) {
+  const t = Number(date.slice(0, 4)) * 12 + Number(date.slice(5, 7)) - 1 + months, year = Math.floor(t / 12), month = t % 12 + 1;
+  const day = Math.min(Number(date.slice(8, 10)), new Date(Date.UTC(year, month, 0)).getUTCDate());
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+// The next date of a cycle after `date`, past `today` (a chore done late does not come back already late).
+export function nextCycleDate(date, cycle, today) {
+  const step = {w1: d => shiftDay(d, 7), w2: d => shiftDay(d, 14), m1: d => shiftDate(d, 1), m3: d => shiftDate(d, 3), m6: d => shiftDate(d, 6), y1: d => shiftDate(d, 12)}[cycle];
+  if (!step || !date) return '';
+  let next = step(date);
+  for (let i = 0; i < 1000 && next <= today; i++) next = step(next);
+  return next;
+}
+export const liveLists = state => Object.values(state.lists || {}).filter(l => !l.deleted && l.name)
+  .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || String(a.name).localeCompare(String(b.name), 'pt-BR'));
+export const liveChores = (state, list) => Object.values(state.chores || {}).filter(c => !c.deleted && c.text && (!list || c.list === list) && state.lists?.[c.list] && !state.lists[c.list].deleted);
+// What shows in a person's Hoje: due today or late, for them or for anyone; plus what was checked today.
+export const choresForToday = (state, user, today, doneToday = () => false) => liveChores(state)
+  .filter(c => (c.who === '' || c.who === user) && c.date && (c.done ? doneToday(c) : c.date <= today));
+
+// Quick add in a Casa list: "Marcar vacina @bia qui" → text, who and date.
+// @eu is the person typing, @nós/@todos is anyone, @<name> matches the start of someone's name.
+// The day, as the last word: hoje, amanhã, seg…dom (the next one, today excluded), 20/12 (this year, or next when past).
+const WEEKDAYS = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sab'];
+export function parseChore(input, people, me, today) {
+  let text = ` ${String(input).replace(/\s+/g, ' ').trim()} `, who, date;
+  const at = text.match(/ @(\S+)(?= )/);
+  if (at) {
+    const key = itemKey(at[1]);
+    const found = ['eu', 'mim'].includes(key) ? me : ['nos', 'todos', 'qualquer'].includes(key) ? '' : people.find(p => key && itemKey(p.name).startsWith(key))?.id;
+    if (found !== undefined) { who = found; text = text.replace(at[0], ' '); }
+  }
+  // Only the last word can be the day, so "Ter que ligar" or "sex shop" stay text.
+  for (const word of [...text.matchAll(/ (\S+)(?= )/g)].slice(-1)) {
+    const key = itemKey(word[1]).replace(/[.,]$/, '');
+    let found;
+    if (key === 'hoje') found = today;
+    else if (key === 'amanha') found = shiftDay(today, 1);
+    else if (WEEKDAYS.some(d => key === d || (key.length >= 3 && d.startsWith(key.slice(0, 3)) && /^(dom|seg|ter|qua|qui|sex|sab)(ingo|unda|ca|rta|nta|ta|ado)?(-feira)?$/.test(key)))) {
+      const target = WEEKDAYS.indexOf(key.slice(0, 3)), now = new Date(`${today}T12:00:00Z`).getUTCDay();
+      found = shiftDay(today, (target - now + 7) % 7 || 7);
+    } else {
+      const dm = key.match(/^(\d{1,2})\/(\d{1,2})$/);
+      if (dm && Number(dm[2]) >= 1 && Number(dm[2]) <= 12 && Number(dm[1]) >= 1) {
+        const y = Number(today.slice(0, 4)), mk = year => `${year}-${dm[2].padStart(2, '0')}-${dm[1].padStart(2, '0')}`;
+        const valid = d => new Date(`${d}T12:00:00Z`).toISOString().slice(0, 10) === d;
+        if (valid(mk(y))) found = mk(y) < today && valid(mk(y + 1)) ? mk(y + 1) : mk(y);
+      }
+    }
+    if (found) { date = found; text = text.slice(0, word.index) + ' ' + text.slice(word.index + word[0].length); break; }
+  }
+  return {text: text.replace(/\s+/g, ' ').trim(), ...(who !== undefined ? {who} : {}), ...(date ? {date} : {})};
 }
