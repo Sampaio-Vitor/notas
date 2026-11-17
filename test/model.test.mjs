@@ -41,6 +41,21 @@ test('repetição a cada 2 semanas conta as semanas a partir do início', () => 
   assert.ok(repeatsOn({days: '3', monthDay: 0, weeks: 1}, '2026-10-28'));
 });
 
+test('repetição criada para outro dia só começa nesse dia', () => {
+  // Natação às terças e quintas a partir de 2026-11-19 (quinta).
+  const r = {days: '24', monthDay: 0, weeks: 1, start: '2026-11-19'};
+  assert.ok(!repeatsOn(r, '2026-11-17'));
+  assert.ok(repeatsOn(r, '2026-11-19'));
+  assert.ok(repeatsOn(r, '2026-11-24'));
+  const m = {days: '', monthDay: 5, weeks: 1, start: '2026-12-01'};
+  assert.ok(!repeatsOn(m, '2026-11-05'));
+  assert.ok(repeatsOn(m, '2026-12-05'));
+  const s = initialState();
+  s.repeats.r = {id: 'r', text: 'Natação', section: 'p', time: '', days: '24', monthDay: 0, weeks: 1, start: '2026-11-19'};
+  assert.ok(!rollover(s, '2026-11-17').some(o => o.collection === 'tasks'));
+  assert.ok(rollover(s, '2026-11-19').some(o => o.id === 'r-r-2026-11-19'));
+});
+
 test('repetição mensal usa o último dia quando o mês é mais curto', () => {
   const r = {monthDay: 31, days: ''};
   assert.ok(repeatsOn(r, '2026-02-28'));

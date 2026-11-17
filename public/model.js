@@ -53,6 +53,8 @@ const dayNumber = date => Date.UTC(Number(date.slice(0, 4)), Number(date.slice(5
 // With weeks > 1 the weekdays come every `weeks` weeks, counted from the week of `start`.
 export function repeatsOn(repeat, date) {
   if (repeat.deleted) return false;
+  // A repeat scheduled for another day starts there.
+  if (repeat.start && date < repeat.start) return false;
   if (repeat.monthDay > 0) {
     const day = Number(date.slice(8, 10));
     return day === Math.min(repeat.monthDay, lastDayOfMonth(date));

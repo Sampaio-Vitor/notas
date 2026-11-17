@@ -252,7 +252,7 @@ function repeatLabel(r) {
   return [...r.days].map(d => WEEK[d].slice(0, 3)).join(', ');
 }
 function nextOccurrence(r) {
-  for (let i = 1; i <= 62; i++) { const d = addDays(today(), i); if (repeatsOn(r, d)) return d; }
+  for (let i = 1; i <= 400; i++) { const d = addDays(today(), i); if (repeatsOn(r, d)) return d; }
   return null;
 }
 
@@ -936,7 +936,7 @@ function pageRepeats() {
     const items = list.filter(r => r.section === s.id).sort((a, b) => (a.time || '99').localeCompare(b.time || '99'));
     return items.length ? `<div class="n-group-h"><h2>${esc(s.name)}</h2></div><div class="n-list">${items.map(r => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-repeat="${r.id}"><span>${esc(r.text)}</span><span class="n-meta">${esc(repeatLabel(r))}${r.time ? `, ${timeLabel(r)}` : ''}</span></button><span class="n-chev" aria-hidden="true">›</span></div>`).join('')}</div>` : '';
   }).join('');
-  return {html: `<div class="n-top"><button class="n-link" data-back>‹ Ajustes</button></div><h1 class="n-title">Repetições</h1>${groups || '<div class="n-empty"><p>Nenhuma tarefa se repete.</p><p class="n-note">Ao criar uma tarefa para hoje, escolha Repetir.</p></div>'}`, action: ''};
+  return {html: `<div class="n-top"><button class="n-link" data-back>‹ Ajustes</button></div><h1 class="n-title">Repetições</h1>${groups || '<div class="n-empty"><p>Nenhuma tarefa se repete.</p><p class="n-note">Ao criar uma tarefa, escolha Repetir.</p></div>'}`, action: ''};
 }
 
 function pageMonthly() {
@@ -1073,15 +1073,16 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
     const whenValue = () => editingRepeat ? 'today' : form.elements.when.value;
     const update = () => {
       // Moved off its past day, the task happens once there.
-      const chosen = whenValue(), rule = form.elements.rule.value, repeats = chosen === 'day' || (chosen === 'today' && !pastDay);
+      // Another day can start a repeat too, except when moving one occurrence of a repeat.
+      const chosen = whenValue(), rule = form.elements.rule.value, repeats = chosen === 'day' || (chosen === 'today' && !pastDay) || (chosen === 'later' && !task?.repeat);
       $('[data-today-only]', form).hidden = chosen === 'backlog';
       $('[data-later-only]', form).hidden = chosen !== 'later';
       const pull = $('[data-pull-only]', form);
       if (pull) pull.hidden = chosen === 'backlog';
-      // A task on another day happens once; repeating starts from Hoje.
       $('[data-repeat-only]', form).hidden = !repeats;
       $('[data-days]', form).hidden = !repeats || !['daily', 'weekdays', 'custom', 'biweekly'].includes(rule);
-      $('[data-first-day]', form).hidden = !repeats || rule !== 'biweekly';
+      // On another day, the chosen date is where the repeat starts.
+      $('[data-first-day]', form).hidden = !repeats || rule !== 'biweekly' || chosen === 'later';
       $('[data-month-day]', form).hidden = !repeats || rule !== 'monthly';
       const timed = !!form.elements.time.value;
       $('[data-end-only]', form).hidden = !timed;
@@ -1144,10 +1145,11 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       if (end && end <= time) { toast('O fim precisa ser depois do início.'); return form.elements.end.focus(); }
       const rule = form.elements.rule.value;
       const chosen = [...form.elements.day].filter(b => b.checked).map(b => b.value).join('');
-      const wantsRepeat = (onDay || (onToday && !pastDay)) && (rule === 'monthly' || (rule !== 'none' && chosen));
-      let start = '';
+      const wantsRepeat = (onDay || (onToday && !pastDay) || (!!later && !task?.repeat)) && (rule === 'monthly' || (rule !== 'none' && chosen));
+      // A repeat set on another day starts on that day; editing keeps the start it had.
+      let start = later || repeat?.start || '';
       if (wantsRepeat && rule === 'biweekly') {
-        const from = form.elements.start.value;
+        const from = later || form.elements.start.value;
         if (!from) { toast('Escolha a partir de quando repete.'); return form.elements.start.focus(); }
         // Anchor on the first chosen weekday from that date on.
         start = from;
@@ -1161,14 +1163,22 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
         rid = '';
       } else if (wantsRepeat) {
         rid ||= uid();
-        template = {text: value, section: sectionId, time, end, days: rule === 'monthly' ? '' : chosen, monthDay: rule === 'monthly' ? Number(form.elements.monthDay.value) : 0, weeks: start ? 2 : 1, start, meeting};
+        template = {text: value, section: sectionId, time, end, days: rule === 'monthly' ? '' : chosen, monthDay: rule === 'monthly' ? Number(form.elements.monthDay.value) : 0, weeks: rule === 'biweekly' ? 2 : 1, start: wantsRepeat ? start : '', meeting};
         ops.push({collection: 'repeats', id: rid, patch: template});
       } else if (rid) {
         ops.push({collection: 'repeats', id: rid, patch: {deleted: true}});
         rid = '';
       }
       let message = later && later !== task?.date ? `Agendada para ${nextDayLabel(later)}.` : leavingPast ? (onToday ? 'Tarefa movida para hoje.' : 'Tarefa movida para o backlog.') : '';
-      if (!editingRepeat) {
+      if (!editingRepeat && later && wantsRepeat) {
+        // The repeat creates each day's task, the first one included.
+        const first = repeatsOn(template, later) ? later : nextOccurrence(template);
+        if (task) {
+          ops.push({collection: 'tasks', id: task.id, patch: {deleted: true}});
+          if (first === later) ops.push({collection: 'tasks', id: occurrenceId(rid, later), patch: {text: value, section: sectionId, time, end, meeting, repeat: rid, date: later, done: false}});
+        }
+        message = first ? `Repete a partir de ${nextDayLabel(first)}.` : '';
+      } else if (!editingRepeat) {
         if (task) {
           const date = later || (onDay ? pastDay : onToday ? today() : '');
           // Brought from a past day, it starts over as not done.
