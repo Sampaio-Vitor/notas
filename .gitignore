@@ -4,3 +4,8 @@ node_modules/
 .DS_Store
 .deploy/
 backups/
+
+# Documentação, decisões e mockups ficam só neste computador.
+*.md
+docs/
+design/

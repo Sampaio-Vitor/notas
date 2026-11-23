@@ -91,7 +91,8 @@ docker exec "$container" node -e 'const expected=process.argv[1]; const url=proc
 if [[ ${DEPLOY_SKIP_HTTPS:-0} != 1 ]]; then
   public_origin=$(docker inspect "$container" --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^PUBLIC_ORIGIN=//p')
   [[ $public_origin == https://* ]] || { echo 'Expected an HTTPS PUBLIC_ORIGIN' >&2; exit 1; }
-  health=$(curl --fail --silent --show-error --max-time 15 "${public_origin%/}/healthz")
+  # No --show-error: the error would print the public address in the (public) Actions log.
+  health=$(curl --fail --silent --max-time 15 "${public_origin%/}/healthz") || { echo 'HTTPS health check failed' >&2; exit 1; }
   printf '%s' "$health" | docker exec -i "$container" node -e 'let b="";process.stdin.on("data",c=>b+=c);process.stdin.on("end",()=>{const h=JSON.parse(b);if(!h.ok||h.revision!==process.argv[1])process.exit(1)})' "$revision"
 fi
 

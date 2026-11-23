@@ -105,21 +105,30 @@ jobs:
             echo 'Configure Tailscale and SSH secrets' >&2
             exit 1
           }
+      # The logs are public: the host and user are secrets (masked), and the host's short
+      # name is masked too. Nothing below prints the host's tailnet address.
+      - name: Mask deployment target
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          [[ -n $DEPLOY_HOST ]] || { echo 'Configure the DEPLOY_HOST secret' >&2; exit 1; }
+          echo "::add-mask::${DEPLOY_HOST%%.*}"
       - uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           audience: ${{ secrets.TS_AUDIENCE }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:notas-ci
-          ping: ${{ vars.DEPLOY_HOST }}
       - name: Configure SSH
         env:
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           [[ $DEPLOY_HOST =~ ^[a-zA-Z0-9.-]+$ && $DEPLOY_USER =~ ^[a-z_][a-z0-9_-]*$ ]] || exit 1
+          # Wait for the host on the tailnet without printing its name or address.
+          for _ in $(seq 1 30); do tailscale ping -c 1 "$DEPLOY_HOST" > /dev/null 2>&1 && break; sleep 2; done
           install -d -m 700 ~/.ssh
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
