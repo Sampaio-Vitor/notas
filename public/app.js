@@ -3,7 +3,7 @@ import {createNavigation} from './navigation.js';
 const report = message => { try { navigator.sendBeacon?.('/api/client-log', new Blob([JSON.stringify({message})], {type: 'application/json'})); } catch {} };
 addEventListener('error', e => report(`${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`));
 addEventListener('unhandledrejection', e => report(`promise: ${e.reason?.stack || e.reason}`));
-import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, overdueTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, virtualBill, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, billChain, linkedCard, cardBill, parseQuickTask, meetingLanes, meetingEnd, onAgenda, toMinutes, fromMinutes, tasksForDay, billDueDate, monthBills, liveLists, liveChores, choresForToday, parseChore, nextCycleDate, CYCLES} from './model.js';
+import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, overdueTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, virtualBill, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, billChain, linkedCard, cardBill, parseQuickTask, meetingLanes, meetingEnd, onAgenda, toMinutes, fromMinutes, tasksForDay, billDueDate, monthBills, liveLists, liveChores, choresForToday, parseChore, nextCycleDate, CYCLES, origin, taskSteps, taskDoneOps, stepToggleOps} from './model.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -211,11 +211,39 @@ const settling = new Set();
 let settleTimer;
 const sunk = t => settling.has(t.id) ? !t.done : !!t.done;
 const byDone = list => byTime(list).sort((a, b) => sunk(a) - sunk(b));
-function toggleTask(id) {
+function settle(id) {
   settling.add(id);
-  commit('tasks', id, {done: !state.tasks[id].done});
   clearTimeout(settleTimer);
   settleTimer = setTimeout(() => { settling.clear(); flip(render); }, 450);
+}
+function toggleTask(id) {
+  settle(id);
+  commitMany(taskDoneOps(state, state.tasks[id], !state.tasks[id].done));
+}
+// Checking the last step completes the task; it settles like a task checked by hand.
+function toggleStep(taskId, stepId) {
+  const task = state.tasks[taskId];
+  if (!task) return;
+  const ops = stepToggleOps(state, task, stepId);
+  if (ops.some(op => op.collection === 'tasks')) settle(taskId);
+  commitMany(ops);
+}
+// Which tasks show their steps, on this device.
+const openSteps = new Set((() => { try { return JSON.parse(localStorage.getItem('notas-open-steps') || '[]'); } catch { return []; } })());
+function showSteps(id, open = !openSteps.has(id)) {
+  open ? openSteps.add(id) : openSteps.delete(id);
+  try { localStorage.setItem('notas-open-steps', JSON.stringify([...openSteps].slice(-100))); } catch {}
+  render();
+}
+// Opens the steps with the cursor in "Passo", for the first step or the next one.
+function addStepField(id) {
+  showSteps(id, true);
+  $(`[data-add-step="${CSS.escape(id)}"] input`)?.focus();
+}
+function addStep(task, text) {
+  const steps = taskSteps(state, task), order = steps.reduce((n, s) => Math.max(n, (s.order ?? 0) + 1), 0);
+  // A new step means the task is not done yet.
+  commitMany([{collection: 'steps', id: uid(), patch: {task: origin(task), text, done: false, order}}, ...(task.done ? [{collection: 'tasks', id: task.id, patch: {done: false}}] : [])]);
 }
 // Re-renders, then slides each task row from where it was to where it landed.
 function flip(update) {
@@ -269,19 +297,29 @@ function statusHtml() {
 
 // A late note (the day a task was planned for) takes the place of its time.
 function taskRow(t, mode = 'edit', late = '') {
+  const steps = taskSteps(state, t), k = doneCount(steps), n = steps.length;
+  const count = n ? `<span class="n-meta">${k}/${n}</span>` : '';
   const meta = late ? `<span class="n-meta is-late">${esc(late)}</span>` : t.time || t.repeat ? `<span class="n-meta">${t.repeat ? ICONS.rep : ''}${esc(timeLabel(t))}</span>` : '';
   if (mode === 'pick') {
     const on = selected.has(t.id);
-    return `<div class="n-row d-pick ${on ? 'is-selected' : ''} ${cursor === t.id ? 'is-cursor' : ''}" data-row="${t.id}" data-pick="${t.id}" draggable="true"><button class="n-check n-square" data-select="${t.id}" aria-pressed="${on}" aria-label="Selecionar ${esc(t.text)}">${ICONS.check}</button><span class="n-text">${esc(t.text)}</span>${meta}</div>`;
+    return `<div class="n-row d-pick ${on ? 'is-selected' : ''} ${cursor === t.id ? 'is-cursor' : ''}" data-row="${t.id}" data-pick="${t.id}" draggable="true"><button class="n-check n-square" data-select="${t.id}" aria-pressed="${on}" aria-label="Selecionar ${esc(t.text)}">${ICONS.check}</button><span class="n-text">${esc(t.text)}</span>${meta}${count}</div>`;
   }
   if (mode === 'select') {
     const on = selected.has(t.id);
-    return `<div class="n-row ${on ? 'is-selected' : ''}"><button class="n-check n-square" data-select="${t.id}" aria-pressed="${on}" aria-label="Selecionar ${esc(t.text)}">${ICONS.check}</button><button class="n-text" data-select="${t.id}">${esc(t.text)}</button></div>`;
+    return `<div class="n-row ${on ? 'is-selected' : ''}"><button class="n-check n-square" data-select="${t.id}" aria-pressed="${on}" aria-label="Selecionar ${esc(t.text)}">${ICONS.check}</button><button class="n-text" data-select="${t.id}">${esc(t.text)}</button>${count}</div>`;
   }
-  const row = `<div class="n-row ${t.done ? 'is-done' : ''} ${t.done && settling.has(t.id) ? 'is-settling' : ''} ${cursor === t.id ? 'is-cursor' : ''}" data-row="${t.id}"><button class="n-check" data-toggle="${t.id}" data-collection="tasks" aria-pressed="${!!t.done}" aria-label="${t.done ? 'Desmarcar' : 'Concluir'} ${esc(t.text)}">${ICONS.check}</button><button class="n-text" data-edit-task="${t.id}">${esc(t.text)}</button>${meta}</div>`;
-  if (mode === 'swipe') return `<div class="n-swipe" data-swipe="${t.id}"><span class="n-swipe-action" aria-hidden="true">Hoje</span>${row}</div>`;
-  return row;
+  // With steps, the circle fills as they get done and, while they are closed, the next one
+  // shows under the name.
+  const open = n > 0 && openSteps.has(t.id), next = !t.done && !open && steps.find(s => !s.done);
+  const ring = n && !t.done ? ` n-ring" style="--p:${k / n}` : '';
+  const text = next ? `<button class="n-text n-two" data-edit-task="${t.id}"><span>${esc(t.text)}</span><span class="n-meta n-next">${esc(next.text)}</span></button>` : `<button class="n-text" data-edit-task="${t.id}">${esc(t.text)}</button>`;
+  const toggle = n ? `<button class="n-steps ${open ? 'is-open' : ''} ${k === n ? 'is-full' : ''}" data-steps="${t.id}" aria-expanded="${open}" aria-label="${open ? 'Ocultar' : 'Mostrar'} passos, ${k} de ${n} feitos">${k}/${n}${ICONS.next}</button>` : '';
+  const row = `<div class="n-row ${t.done ? 'is-done' : ''} ${t.done && settling.has(t.id) ? 'is-settling' : ''} ${cursor === t.id ? 'is-cursor' : ''}" data-row="${t.id}"><button class="n-check${ring}" data-toggle="${t.id}" data-collection="tasks" aria-pressed="${!!t.done}" aria-label="${t.done ? 'Desmarcar' : 'Concluir'} ${esc(t.text)}">${ICONS.check}</button>${text}${meta}${toggle}</div>`;
+  const list = open ? stepsList(t, steps) : '';
+  if (mode === 'swipe') return `<div class="n-swipe" data-swipe="${t.id}"><span class="n-swipe-action" aria-hidden="true">Hoje</span>${row}</div>${list}`;
+  return row + list;
 }
+const stepsList = (t, steps) => `<div class="n-passos" data-passos="${t.id}">${steps.map(s => `<div class="n-passo ${s.done ? 'is-done' : ''}"><button class="n-check" data-step="${s.id}" data-step-task="${t.id}" aria-pressed="${!!s.done}" aria-label="${s.done ? 'Desmarcar' : 'Concluir'} ${esc(s.text)}">${ICONS.check}</button><span class="n-text">${esc(s.text)}</span></div>`).join('')}<form class="n-passo n-passo-add" data-add-step="${t.id}">${ICONS.plus}<input name="entry" placeholder="Passo" autocomplete="off" autocapitalize="sentences" enterkeyhint="enter" maxlength="500" aria-label="Novo passo de ${esc(t.text)}"></form></div>`;
 
 function sectionGroups(tasks, mode, count) {
   // In edit mode each group takes dropped tasks; empty sections only show up mid-drag.
@@ -962,10 +1000,12 @@ function render() {
   // Re-rendering replaces the add fields; keep what is being typed and the keyboard open.
   const typing = ['#add-item input', '#add-chore input', '#quick-task input'].map(sel => { const field = $(sel); return field && {sel, value: field.value, focused: document.activeElement === field}; }).filter(Boolean);
   const searching = document.activeElement?.matches('[data-bill-search]');
+  const stepForm = document.activeElement?.closest?.('[data-add-step]'), stepTyping = stepForm && {id: stepForm.dataset.addStep, value: stepForm.elements.entry.value};
   if (screen) screen.innerHTML = (wide ? DESK_VIEWS : {hoje: viewHoje, reunioes: viewReunioes, backlog: viewBacklog, compras: viewCasa, contas: viewContas, ajustes: viewAjustes})[tab]();
   for (const {sel, value, focused} of typing) { const field = $(sel); if (!field) continue; field.value = value; if (focused) field.focus({preventScroll: true}); }
   if ($('#quick-task')) drawQuickChips();
   if (searching) $('[data-bill-search]')?.focus({preventScroll: true});
+  if (stepTyping) { const field = $(`[data-add-step="${CSS.escape(stepTyping.id)}"] input`); if (field) { field.value = stepTyping.value; field.focus({preventScroll: true}); } }
   $('#tabbar').innerHTML = wide ? sidebarHtml() : mainTabs().map(([id, label]) => `<button class="n-tab ${tab === id ? 'is-on' : ''}" data-tab="${id}" ${tab === id ? 'aria-current="page"' : ''}>${tabIcon(id)}<span>${label}</span>${id === 'backlog' && overdue().length ? '<i class="n-tab-dot" aria-label="Há tarefas que ficaram para trás"></i>' : ''}${id === 'compras' && casaUnseen() ? '<i class="n-tab-dot c-tab-dot" aria-label="Novidades na Casa"></i>' : ''}</button>`).join('');
   let float = '';
   if (wide) float = tab === 'backlog' && selected.size ? backlogActions() : '';
@@ -1029,6 +1069,27 @@ const sheetTop = (title, ok = 'Salvar') => `<div class="n-sheet-top"><button typ
 function autosize(el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; }
 
 // Edits a task (from Hoje/Backlog) or, with {repeatId}, the repeat itself.
+const passoField = (id, text) => `<div class="n-opt n-passo-field" data-passo-id="${id}"><input value="${esc(text)}" maxlength="500" autocomplete="off" autocapitalize="sentences" enterkeyhint="next" aria-label="Passo"><button type="button" class="n-passo-remove" data-remove-passo aria-label="Remover passo">×</button></div>`;
+// The sheet's steps, in their order, against the ones the task had. What was typed in
+// "Adicionar passo" counts too; a step left empty goes away.
+function stepOps(form, owner, before, task) {
+  const field = $('[data-new-passo]', form);
+  if (!field) return [];
+  const typed = field.value.trim();
+  const rows = [...$$('[data-passo-id]', form).map(r => ({id: r.dataset.passoId, text: $('input', r).value.trim()})), ...(typed ? [{id: '', text: typed}] : [])].filter(r => r.text);
+  const ops = [], kept = new Set();
+  rows.forEach(({id, text}, order) => {
+    const old = id && state.steps[id];
+    if (old) {
+      kept.add(id);
+      if (old.text !== text || old.order !== order || old.task !== owner) ops.push({collection: 'steps', id, patch: {text, order, task: owner}});
+    } else ops.push({collection: 'steps', id: uid(), patch: {task: owner, text, done: false, order}});
+  });
+  for (const s of before) if (!kept.has(s.id)) ops.push({collection: 'steps', id: s.id, patch: {deleted: true}});
+  // A new step means the task is not done yet.
+  if (task?.done && owner === origin(task) && rows.some(r => !r.id)) ops.push({collection: 'tasks', id: task.id, patch: {done: false}});
+  return ops;
+}
 function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, time: presetTime} = {}) {
   const task = id ? state.tasks[id] : null;
   const repeat = state.repeats[repeatId || task?.repeat] && !state.repeats[repeatId || task?.repeat].deleted ? state.repeats[repeatId || task?.repeat] : null;
@@ -1048,9 +1109,11 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
   const title = editingRepeat ? 'Editar repetição' : task ? 'Editar tarefa' : isMeeting ? 'Nova reunião' : 'Nova tarefa';
   // A new task can also pull tasks from the backlog onto the chosen day.
   const pullable = !task && !editingRepeat && tabPrefs(state).backlog && backlog().length > 0;
+  const stepList = task ? taskSteps(state, task) : [];
   const dayOptions = Array.from({length: 31}, (_, i) => `<option value="${i + 1}" ${(repeat?.monthDay || Number(today().slice(8, 10))) === i + 1 ? 'selected' : ''}>${i + 1}</option>`).join('');
   openSheet(`<form class="n-form" id="task-form">${sheetTop(title)}
     <textarea name="text" rows="1" required maxlength="10000" placeholder="Tarefa" aria-label="Tarefa" ${task || editingRepeat ? '' : 'autofocus'}>${esc(source?.text || '')}</textarea>
+    ${editingRepeat ? '' : `<fieldset class="n-fieldset"><legend>Passos</legend><div class="n-opts n-passos-edit" data-passos-edit>${stepList.map(st => passoField(st.id, st.text)).join('')}<label class="n-opt n-passo-new">${ICONS.plus}<input data-new-passo placeholder="Adicionar passo" autocomplete="off" autocapitalize="sentences" enterkeyhint="enter" maxlength="500" aria-label="Adicionar passo"></label></div></fieldset>`}
     <fieldset class="n-fieldset"><legend>Seção</legend><div class="n-chips">${sections().map(s => `<label class="n-chip"><input type="radio" name="section" value="${s.id}" ${s.id === section ? 'checked' : ''}><span>${esc(s.name)}</span></label>`).join('')}</div></fieldset>
     ${editingRepeat ? '' : `<fieldset class="n-seg"><legend class="n-sr">Quando</legend>${[...(pastDay ? [['day', cap(dayShort(pastDay).replace(/ de \S+$/, ''))]] : []), ['today', 'Hoje'], ['later', 'Outro dia'], ['backlog', 'Backlog']].filter(([v]) => v !== 'backlog' || tabPrefs(state).backlog || isBacklog).map(([v, l]) => `<label><input type="radio" name="when" value="${v}" ${v === initialWhen ? 'checked' : ''}><span>${l}</span></label>`).join('')}</fieldset>`}
     <div class="n-opts" data-today-only>
@@ -1070,6 +1133,23 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
   </form>`, () => {
     const form = $('#task-form'), text = form.elements.text;
     autosize(text); text.addEventListener('input', () => autosize(text));
+    // Return in a step adds the next one instead of saving; × takes it out.
+    const newPasso = $('[data-new-passo]', form);
+    if (newPasso) {
+      form.addEventListener('keydown', e => {
+        if (e.key !== 'Enter' || !e.target.closest('[data-passos-edit] input')) return;
+        e.preventDefault();
+        if (e.target === newPasso && newPasso.value.trim()) { newPasso.closest('label').insertAdjacentHTML('beforebegin', passoField('', newPasso.value.trim())); newPasso.value = ''; }
+        else if (e.target !== newPasso) newPasso.focus();
+      });
+      form.addEventListener('click', e => {
+        const b = e.target.closest('[data-remove-passo]');
+        if (!b) return;
+        e.stopPropagation();
+        b.closest('[data-passo-id]').replaceWith();
+        newPasso.focus();
+      });
+    }
     const whenValue = () => editingRepeat ? 'today' : form.elements.when.value;
     const update = () => {
       // Moved off its past day, the task happens once there.
@@ -1156,6 +1236,8 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
         while (!chosen.includes(String(weekday(start)))) start = addDays(start, 1);
       }
       const ops = [];
+      // The task the steps end up on (its origin); none when no task is saved.
+      let owner = '';
       let rid = repeatId || task?.repeat || '';
       let template = null;
       if ((later || leavingPast) && task?.repeat) {
@@ -1175,6 +1257,7 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
         const first = repeatsOn(template, later) ? later : nextOccurrence(template);
         if (task) {
           ops.push({collection: 'tasks', id: task.id, patch: {deleted: true}});
+          if (first === later) owner = occurrenceId(rid, later);
           if (first === later) ops.push({collection: 'tasks', id: occurrenceId(rid, later), patch: {text: value, section: sectionId, time, end, meeting, repeat: rid, date: later, done: false}});
         }
         message = first ? `Repete a partir de ${nextDayLabel(first)}.` : '';
@@ -1183,18 +1266,21 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
           const date = later || (onDay ? pastDay : onToday ? today() : '');
           // Brought from a past day, it starts over as not done.
           ops.push({collection: 'tasks', id: task.id, patch: {text: value, section: sectionId, time, end, meeting, repeat: rid, date, ...(leavingPast ? {done: false} : {})}});
+          owner = origin(task);
         } else if (later) {
-          ops.push({collection: 'tasks', id: uid(), patch: {text: value, section: sectionId, time, end, meeting, repeat: '', date: later, done: false}});
+          owner = uid();
+          ops.push({collection: 'tasks', id: owner, patch: {text: value, section: sectionId, time, end, meeting, repeat: '', date: later, done: false}});
         } else if (wantsRepeat && !repeatsOn(template, today())) {
           const next = nextOccurrence(template);
           message = next ? `Repete a partir de ${nextDayLabel(next)}.` : '';
         } else {
           const newId = wantsRepeat ? occurrenceId(rid, today()) : uid();
+          owner = newId;
           ops.push({collection: 'tasks', id: newId, patch: {text: value, section: sectionId, time, end, meeting, repeat: rid, date: onToday ? today() : '', done: false}});
           if (!onToday && tab !== 'backlog') message = 'Tarefa salva no backlog.';
         }
       }
-      commitMany([...ops, ...pullOps]);
+      commitMany([...ops, ...(owner ? stepOps(form, owner, stepList, task) : []), ...pullOps]);
       closeSheet();
       if (message || pullMessage) toast([message, pullMessage].filter(Boolean).join(' '));
     };
@@ -1691,6 +1777,8 @@ document.addEventListener('click', e => {
   else if ('clearSelection' in d) { selected.clear(); render(); }
   else if ('close' in d) closeSheet();
   else if ('back' in d) navigation.back();
+  else if (d.step) toggleStep(d.stepTask, d.step);
+  else if (d.steps) showSteps(d.steps);
   else if (d.toggle && d.collection === 'tasks' && projected(d.toggle)) { const {id, ...fields} = projected(d.toggle); commit('tasks', id, {...fields, done: true}); }
   else if (d.toggle) { const c = d.collection; c === 'tasks' ? toggleTask(d.toggle) : c === 'shopping' ? toggleCart(d.toggle) : c === 'chores' ? toggleChore(d.toggle) : commit(c, d.toggle, {done: !state[c][d.toggle].done}); }
   else if (d.casaOpen) openCasa(d.casaOpen);
@@ -2043,6 +2131,16 @@ document.addEventListener('submit', e => {
   input.value = '';
   input.focus({preventScroll: true});
 });
+// Passos: Return adds the step and keeps the keyboard open for the next one.
+document.addEventListener('submit', e => {
+  const form = e.target.closest?.('[data-add-step]');
+  if (!form) return;
+  e.preventDefault();
+  const input = form.elements.entry, text = input.value.trim(), task = state.tasks[form.dataset.addStep];
+  if (!text || !task || task.deleted) return;
+  input.value = '';
+  addStep(task, text);
+});
 // Compras: Return adds the item and keeps the keyboard open for the next one.
 document.addEventListener('submit', e => {
   if (e.target.id !== 'add-item') return;
@@ -2263,7 +2361,8 @@ function newTask() {
 }
 
 function deleteTasks(ids) {
-  const copies = ids.map(id => state.tasks[id]).filter(t => t && !t.deleted).map(({id, deleted, ...rest}) => rest);
+  // A copy keeps the origin, so it keeps the steps.
+  const copies = ids.map(id => state.tasks[id]).filter(t => t && !t.deleted).map(({id, deleted, ...rest}) => ({...rest, from: rest.from || id}));
   if (!copies.length) return;
   commitMany(ids.map(id => ({collection: 'tasks', id, patch: {deleted: true}})));
   if (ids.includes(cursor)) cursor = null;
@@ -2338,6 +2437,8 @@ function taskMenu(id) {
   return [
     menuItem(t.done ? 'Reabrir' : 'Concluir', `data-ctx="done" data-id="${id}"`, tab === 'backlog' ? '' : 'Espaço'),
     menuItem('Editar…', `data-ctx="edit" data-id="${id}"`, '↩'),
+    menuItem('Adicionar passo', `data-ctx="add-step" data-id="${id}"`, '⇧↩'),
+    taskSteps(state, t).length ? menuItem(openSteps.has(id) ? 'Ocultar passos' : 'Mostrar passos', `data-ctx="steps" data-id="${id}"`, 'P') : '',
     t.date !== today() ? menuItem('Mover para hoje', `data-ctx="today" data-id="${id}"`, tab === 'backlog' ? `${KEY}↩` : '') : '',
     t.date !== '' && tabPrefs(state).backlog ? menuItem('Mover para o Backlog', `data-ctx="backlog" data-id="${id}"`) : '',
     others.length ? `<div class="d-mi d-has" role="menuitem" aria-haspopup="menu" tabindex="-1"><span>Mover para a seção</span><span class="d-arrow" aria-hidden="true">›</span><div class="d-ctx d-sub" role="menu">${others.map(s => menuItem(`${dot(s.id)}${esc(s.name)}`, `data-ctx="section" data-id="${id}" data-section="${s.id}"`)).join('')}</div></div>` : '',
@@ -2371,6 +2472,8 @@ function menuAction(d) {
   const id = d.id;
   if (d.ctx === 'done') toggleTask(id);
   else if (d.ctx === 'edit') taskSheet({id});
+  else if (d.ctx === 'add-step') addStepField(id);
+  else if (d.ctx === 'steps') showSteps(id);
   else if (d.ctx === 'today') moveToToday([id]);
   else if (d.ctx === 'backlog') { commit('tasks', id, {date: '', done: false}); toast('Tarefa movida para o Backlog.'); }
   else if (d.ctx === 'section') commit('tasks', id, {section: d.section});
@@ -2538,7 +2641,9 @@ document.addEventListener('keydown', e => {
   const task = cursor && state.tasks[cursor] && !state.tasks[cursor].deleted && $(`.n-row[data-row="${CSS.escape(cursor)}"]`) ? state.tasks[cursor] : null;
   if (!task) return;
   if (key === ' ') { e.preventDefault(); if (tab === 'backlog') { selected.has(task.id) ? selected.delete(task.id) : selected.add(task.id); render(); } else toggleTask(task.id); }
+  else if (key === 'Enter' && e.shiftKey) { e.preventDefault(); addStepField(task.id); }
   else if (key === 'Enter') { e.preventDefault(); taskSheet({id: task.id}); }
+  else if (key.toLowerCase() === 'p' && taskSteps(state, task).length) { e.preventDefault(); showSteps(task.id); }
   else if (key === 'Backspace' || key === 'Delete') { e.preventDefault(); deleteTasks(tab === 'backlog' && selected.size ? [...selected] : [task.id]); selected.clear(); }
 });
 

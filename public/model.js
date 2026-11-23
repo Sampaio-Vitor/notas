@@ -2,7 +2,7 @@
 // daily/monthly rollover. Every change is a patch {collection,id,patch}.
 // The shared space (Casa) holds `shopping`, `lists`, `chores` and `notes`; everything else is per person.
 export const SHARED_COLLECTIONS = ['shopping', 'lists', 'chores', 'notes'];
-export const COLLECTIONS = ['sections', 'tasks', 'repeats', 'bills', 'billRules', 'days', 'months', 'meetings', 'shopping', 'prefs', 'cards', 'cardLinks', 'lists', 'chores', 'notes'];
+export const COLLECTIONS = ['sections', 'tasks', 'repeats', 'bills', 'billRules', 'days', 'months', 'meetings', 'shopping', 'prefs', 'cards', 'cardLinks', 'lists', 'chores', 'notes', 'steps'];
 
 export const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 export const weekday = date => new Date(`${date}T12:00:00`).getDay();
@@ -328,9 +328,25 @@ export function migrate(state) {
 
 // Carried copies point at the original task, so the same pending item is
 // offered only once and never copied twice on the same day.
-const origin = t => t.from || t.id;
+export const origin = t => t.from || t.id;
 export function carried(state, task) {
   return live(state, 'tasks').some(x => x.id !== task.id && origin(x) === origin(task) && x.date > task.date);
+}
+
+// Steps (passos): a checklist inside a task. They belong to the task's origin, so the copies
+// carried to later days share them: a task half done goes forward whole, with what was checked.
+// A task is done when all its steps are; checking it marks the steps left.
+export const taskSteps = (state, task) => live(state, 'steps').filter(s => s.task === origin(task))
+  .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id));
+export function taskDoneOps(state, task, done) {
+  const left = done ? taskSteps(state, task).filter(s => !s.done) : [];
+  return [{collection: 'tasks', id: task.id, patch: {done}}, ...left.map(s => ({collection: 'steps', id: s.id, patch: {done: true}}))];
+}
+export function stepToggleOps(state, task, stepId) {
+  const steps = taskSteps(state, task), step = steps.find(s => s.id === stepId);
+  if (!step) return [];
+  const done = !step.done, all = steps.every(s => s.id === stepId ? done : s.done);
+  return [{collection: 'steps', id: stepId, patch: {done}}, ...(!!task.done !== all ? [{collection: 'tasks', id: task.id, patch: {done: all}}] : [])];
 }
 
 // Tasks given a later date wait for their day, soonest first; on the day they

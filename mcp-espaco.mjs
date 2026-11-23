@@ -2,7 +2,7 @@
 // the space (MCP_TOKENS="robo:<token>:ana"); the space comes from the token, never from an
 // argument. Pure functions: the state goes in, the result and the operations to commit come out.
 import {createHash} from 'node:crypto';
-import {live, sortedSections, occurrenceId, overdueTasks, scheduledTasks, itemKey, linkedCard, tasksForDay, meetingEnd, shiftMonth, own, RESERVED_IDS, billDueDate, monthBills} from './public/model.js';
+import {live, sortedSections, occurrenceId, overdueTasks, scheduledTasks, itemKey, linkedCard, tasksForDay, meetingEnd, shiftMonth, own, RESERVED_IDS, billDueDate, monthBills, taskSteps, taskDoneOps} from './public/model.js';
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/, MONTH = /^\d{4}-(0[1-9]|1[0-2])$/, TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 const money = n => new Intl.NumberFormat('pt-BR', {style: 'currency', currency: 'BRL'}).format((n || 0) / 100).replace(/ /g, ' ');
@@ -16,7 +16,7 @@ const validDate = s => {
 const quandoArg = {type: 'string', description: '"hoje", "amanha", "backlog" ou uma data AAAA-MM-DD.'};
 export const SPACE_TOOLS = [
   {name: 'tarefas_dia', title: 'Tarefas de um dia',
-    description: 'As tarefas de um dia (padrão: hoje), por seção, na ordem das seções. Inclui as que as repetições vão criar nesse dia. Cada tarefa traz id, texto, feita, horario e repete.',
+    description: 'As tarefas de um dia (padrão: hoje), por seção, na ordem das seções. Inclui as que as repetições vão criar nesse dia. Cada tarefa traz id, texto, feita, horario e repete; a que tem passos (checklist dentro da tarefa) traz passos, com texto e feito.',
     inputSchema: {type: 'object', properties: {data: {type: 'string', description: 'AAAA-MM-DD; sem ela, hoje.'}}}, annotations: {readOnlyHint: true}},
   {name: 'tarefas_backlog', title: 'Backlog e o que ficou para trás',
     description: 'O backlog por seção, as tarefas que ficaram para trás (de dias passados, não feitas) e as agendadas para os próximos dias.',
@@ -26,7 +26,7 @@ export const SPACE_TOOLS = [
     inputSchema: {type: 'object', properties: {texto: {type: 'string', minLength: 1, maxLength: 500}, quando: quandoArg, secao: {type: 'string', maxLength: 100}, horario: {type: 'string', description: 'HH:MM; não vale com quando=backlog.'}, chave: {type: 'string', minLength: 1, maxLength: 200, description: 'Opcional. Chave de idempotência: a mesma chave cria a tarefa uma vez só.'}}, required: ['texto', 'quando']},
     annotations: {readOnlyHint: false, destructiveHint: false}},
   {name: 'tarefa_concluir', title: 'Concluir tarefa',
-    description: 'Marca uma tarefa como feita (ou desmarca, com feita=false), pelo id que tarefas_dia ou tarefas_backlog devolveu. Uma ocorrência de repetição ainda não gravada é gravada antes, como no app.',
+    description: 'Marca uma tarefa como feita (ou desmarca, com feita=false), pelo id que tarefas_dia ou tarefas_backlog devolveu. Marcar como feita marca também os passos que faltavam, como no app. Uma ocorrência de repetição ainda não gravada é gravada antes, como no app.',
     inputSchema: {type: 'object', properties: {id: {type: 'string', minLength: 1, maxLength: 200}, feita: {type: 'boolean'}}, required: ['id']},
     annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true}},
   {name: 'tarefa_mover', title: 'Mover tarefa',
@@ -45,7 +45,10 @@ export const SPACE_TOOL_NAMES = new Set(SPACE_TOOLS.map(t => t.name));
 function sectionNames(state) { return sortedSections(state).map(s => s.name); }
 const liveSection = (state, id) => { const s = own(state.sections, id); return s && !s.deleted ? s : undefined; };
 const sectionName = (state, id) => liveSection(state, id)?.name || 'Sem seção';
-const taskOut = (state, t) => ({id: t.id, texto: t.text, secao: sectionName(state, t.section), feita: !!t.done, horario: t.time || null, repete: !!t.repeat});
+const taskOut = (state, t) => {
+  const steps = taskSteps(state, t);
+  return {id: t.id, texto: t.text, secao: sectionName(state, t.section), feita: !!t.done, horario: t.time || null, repete: !!t.repeat, ...(steps.length ? {passos: steps.map(s => ({texto: s.text, feito: !!s.done}))} : {})};
+};
 const byTime = list => [...list].sort((a, b) => (a.time ? 0 : 1) - (b.time ? 0 : 1) || (a.time || '').localeCompare(b.time || ''));
 
 function bySection(state, tasks) {
@@ -138,7 +141,7 @@ export function spaceTool(state, name, args, today, newId, agent = '') {
     const done = args.feita === undefined ? true : args.feita === true;
     if (args.feita !== undefined && typeof args.feita !== 'boolean') throw Error('feita deve ser true ou false');
     const {id, ...fields} = task;
-    const ops = !!task.done === done && !shown ? [] : [{collection: 'tasks', id, patch: shown ? {...fields, done} : {done}}];
+    const ops = !!task.done === done && !shown ? [] : shown ? [{collection: 'tasks', id, patch: {...fields, done}}] : taskDoneOps(state, task, done);
     return {result: {id, texto: task.text, feita: done}, ops};
   }
   if (name === 'tarefa_mover') {

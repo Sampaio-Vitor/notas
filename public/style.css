@@ -684,3 +684,47 @@ body[data-layout="desktop"] .n-group-h .n-link { font-size: 13px; min-height: 0;
 .is-done .n-text.n-two[data-edit-chore] { text-decoration: none; }
 .is-done .n-text.n-two[data-edit-chore] > span:first-child { text-decoration: line-through; text-decoration-color: #5a5a5e; }
 .c-faces i:first-child { margin-left: 0; }
+
+/* ---------- Passos (steps inside a task) ---------- */
+/* The circle of a task with steps fills as they get done. */
+.n-check.n-ring { border-color: transparent; background: conic-gradient(var(--yellow) calc(var(--p) * 1turn), #5a5a5e 0); }
+.n-check.n-ring::before { content: ""; position: absolute; inset: 2.5px; border-radius: 50%; background: var(--group); }
+.n-next { overflow: hidden; text-overflow: ellipsis; display: block; }
+.n-steps {
+  flex: none; display: inline-flex; align-items: center; gap: 3px; height: 26px; padding: 0 6px 0 9px; border-radius: 13px;
+  background: var(--group-2); color: #d1d1d6; font-size: 13px; font-variant-numeric: tabular-nums; position: relative;
+}
+.n-steps::after { content: ""; position: absolute; inset: -9px -6px; }
+.n-steps svg { width: 13px; height: 13px; transition: transform .2s; }
+.n-steps.is-open svg { transform: rotate(90deg); }
+.n-steps.is-full { background: rgba(255, 214, 10, .16); color: var(--yellow); }
+.is-done .n-steps { color: var(--secondary); background: var(--group-2); }
+.n-passos { position: relative; background: #161618; }
+.n-list > .n-passos::before, .n-list > .n-passos + .n-row::before, .n-list > .n-passos + .n-swipe .n-row::before {
+  content: ""; position: absolute; top: 0; left: 50px; right: 0; height: .5px; background: var(--line); z-index: 1;
+}
+.n-passo { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 14px 0 50px; position: relative; }
+.n-passo .n-check { width: 20px; height: 20px; border-width: 1.3px; }
+.n-passo .n-check svg { width: 11px; height: 11px; }
+.n-passo .n-text { font-size: 15px; padding: 9px 0; min-height: 40px; }
+.n-passo.is-done .n-check { background: var(--yellow); border-color: var(--yellow); }
+.n-passo.is-done .n-check svg { opacity: 1; }
+.n-passo.is-done .n-text { color: var(--secondary); text-decoration: line-through; text-decoration-color: #5a5a5e; }
+.n-passo-add svg { width: 20px; height: 20px; padding: 2px; color: var(--yellow); flex: none; }
+.n-passo-add input { flex: 1; min-width: 0; background: none; border: 0; outline: none; font-size: 15px; padding: 9px 0; color: var(--text); }
+.n-passo-add input::placeholder { color: #6e6e73; }
+body[data-layout="desktop"] .n-steps { height: 22px; font-size: 12px; }
+body[data-layout="desktop"] .n-check.n-ring::before { inset: 2px; }
+body[data-layout="desktop"] .n-list > .n-passos::before, body[data-layout="desktop"] .n-list > .n-passos + .n-row::before { left: 46px; }
+body[data-layout="desktop"] .n-passo { min-height: 32px; padding-left: 46px; }
+body[data-layout="desktop"] .n-passo .n-check { width: 16px; height: 16px; }
+body[data-layout="desktop"] .n-passo .n-check svg { width: 10px; height: 10px; }
+body[data-layout="desktop"] .n-passo .n-text, body[data-layout="desktop"] .n-passo-add input { font-size: 13.5px; padding: 6px 0; min-height: 32px; }
+body[data-layout="desktop"] .n-passo-add svg { width: 16px; height: 16px; }
+/* In the task sheet */
+.n-opt.n-passo-field input { flex: 1; min-width: 0; background: none; border: 0; outline: none; font-size: 16px; padding: 12px 0; color: var(--text); text-align: left; text-align-last: left; max-width: none; }
+.n-passo-remove { color: var(--secondary); font-size: 22px; width: 36px; min-height: 44px; margin-right: -10px; }
+.n-passo-new { justify-content: flex-start; }
+.n-passo-new svg { width: 18px; height: 18px; color: var(--yellow); flex: none; }
+.n-opt.n-passo-new input { flex: 1; min-width: 0; background: none; border: 0; outline: none; font-size: 16px; padding: 12px 0; color: var(--text); text-align: left; text-align-last: left; max-width: none; }
+.n-passo-new input::placeholder { color: #6e6e73; }

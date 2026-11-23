@@ -21,6 +21,8 @@ const schema = {
   // Casa (shared). `by`, `added`, `doneBy`, `doneAt` and `editedBy` are stamped by the server.
   lists: {name: 'string', order: 'number', deleted: 'boolean'},
   chores: {text: 'string', list: 'string', who: 'string', date: 'string', cycle: 'string', next: 'string', done: 'boolean', added: 'number', by: 'string', doneAt: 'number', doneBy: 'string', deleted: 'boolean'},
+  // A task's checklist; `task` is the task's origin (see taskSteps in model.js).
+  steps: {task: 'string', text: 'string', done: 'boolean', order: 'number', deleted: 'boolean'},
   notes: {title: 'string', body: 'string', order: 'number', added: 'number', by: 'string', edited: 'number', editedBy: 'string', deleted: 'boolean'},
 };
 // Field formats beyond the type check; time and a meeting's end are optional (empty string).
