@@ -5,9 +5,11 @@ import {resolve, dirname, extname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {randomBytes, randomUUID, createHmac, timingSafeEqual} from 'node:crypto';
 import {generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse} from '@simplewebauthn/server';
-import {initialState, apply, SHARED_COLLECTIONS, rollover, migrate, normalize, itemKey, itemId, listed, billOpsConflict, cardBillOps} from './public/model.js';
+import {initialState, apply, SHARED_COLLECTIONS, rollover, migrate, normalize, itemKey, itemId, listed, billOpsConflict, cardBillOps, own, shiftDay} from './public/model.js';
 import {SPACE_TOOLS, SPACE_TOOL_NAMES, spaceTool} from './mcp-espaco.mjs';
 import {validate} from './validacao.mjs';
+import webpush from 'web-push';
+import {casaAlerts, casaMessages, meetingReminders, stillTrue, choreKey} from './push.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const host = process.env.HOST || '127.0.0.1', port = Number(process.env.PORT || 4329);
@@ -43,7 +45,8 @@ db.exec(`PRAGMA journal_mode=WAL;
   CREATE TABLE IF NOT EXISTS spaces (id TEXT PRIMARY KEY, value TEXT);
   CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, value TEXT, created TEXT DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
-  CREATE TABLE IF NOT EXISTS passkeys (id TEXT PRIMARY KEY, public_key TEXT NOT NULL, counter INTEGER NOT NULL, transports TEXT, name TEXT, created TEXT DEFAULT CURRENT_TIMESTAMP, last_used TEXT);`);
+  CREATE TABLE IF NOT EXISTS passkeys (id TEXT PRIMARY KEY, public_key TEXT NOT NULL, counter INTEGER NOT NULL, transports TEXT, name TEXT, created TEXT DEFAULT CURRENT_TIMESTAMP, last_used TEXT);
+  CREATE TABLE IF NOT EXISTS push_subscriptions (endpoint TEXT PRIMARY KEY, user_id TEXT NOT NULL, keys TEXT NOT NULL, device TEXT, created TEXT DEFAULT CURRENT_TIMESTAMP);`);
 if (!db.prepare('PRAGMA table_info(passkeys)').all().some(c => c.name === 'user_id')) db.exec('ALTER TABLE passkeys ADD COLUMN user_id TEXT');
 // Passkeys created before accounts existed belong to the first person.
 db.prepare('UPDATE passkeys SET user_id=? WHERE user_id IS NULL').run(owner.id);
@@ -106,6 +109,107 @@ function notify(space) {
   for (const c of clients) if (space === SHARED || c.user === space) c.res.write('data: changed\n\n');
 }
 
+// ---------- Notifications (Web Push) ----------
+// Each device that turned notifications on in Ajustes has a subscription, tied to the person
+// signed in there. The VAPID keys are made once and kept in the database, like the session
+// key: changing them would silence every device until it subscribes again.
+if (!db.prepare("SELECT value FROM meta WHERE key='vapid'").get()) db.prepare("INSERT INTO meta VALUES ('vapid',?)").run(JSON.stringify(webpush.generateVAPIDKeys()));
+const vapid = JSON.parse(db.prepare("SELECT value FROM meta WHERE key='vapid'").get().value);
+const pushOrigin = process.env.PUBLIC_ORIGIN || '';
+webpush.setVapidDetails(process.env.VAPID_SUBJECT || (pushOrigin.startsWith('https:') ? pushOrigin : 'mailto:notas@localhost.invalid'), vapid.publicKey, vapid.privateKey);
+// Only the browsers' push services (Apple, Google, Mozilla, Microsoft), over HTTPS on the
+// default port: a subscription can never make the server call an address of its own network.
+// Tests add their fake service with PUSH_ALLOW_HOSTS (and PUSH_ALLOW_HTTP).
+const TEST_PUSH_HOSTS = (process.env.PUSH_ALLOW_HOSTS || '').split(',').filter(Boolean);
+const PUSH_HOSTS = ['.push.apple.com', 'fcm.googleapis.com', 'android.googleapis.com', '.push.services.mozilla.com', '.notify.windows.com', ...TEST_PUSH_HOSTS];
+function pushEndpointOk(endpoint) {
+  try {
+    const u = new URL(endpoint);
+    const http = process.env.PUSH_ALLOW_HTTP === '1' && u.protocol === 'http:' && TEST_PUSH_HOSTS.includes(u.hostname);
+    if (!(u.protocol === 'https:' || http) || u.username || u.password || (u.port && !http)) return false;
+    return PUSH_HOSTS.some(h => h.startsWith('.') ? u.hostname.endsWith(h) : u.hostname === h);
+  } catch { return false; }
+}
+const b64Bytes = v => typeof v === 'string' && /^[A-Za-z0-9_-]+={0,2}$/.test(v) ? Buffer.from(v, 'base64url').length : 0;
+const hasDevices = userId => !!db.prepare('SELECT 1 FROM push_subscriptions WHERE user_id=? LIMIT 1').get(userId);
+// Sends to every device of a person (or only `endpoint`); answers how many accepted it.
+async function pushTo(userId, message, options = {}, endpoint) {
+  const subs = db.prepare('SELECT endpoint, keys FROM push_subscriptions WHERE user_id=?').all(userId).filter(s => !endpoint || s.endpoint === endpoint);
+  const sent = await Promise.all(subs.map(async s => {
+    try {
+      // web-push signs and encrypts; fetch sends, with a timeout and without following redirects.
+      const r = webpush.generateRequestDetails({endpoint: s.endpoint, keys: JSON.parse(s.keys)}, JSON.stringify(message), {TTL: 86400, ...options});
+      const res = await fetch(r.endpoint, {method: r.method, headers: r.headers, body: r.body, redirect: 'error', signal: AbortSignal.timeout(10000)});
+      const text = await res.text().catch(() => '');
+      // Gone: the device turned notifications off or the app was removed.
+      if (res.status === 404 || res.status === 410) db.prepare('DELETE FROM push_subscriptions WHERE endpoint=?').run(s.endpoint);
+      else if (!res.ok) console.error('push:', userId, res.status, text.slice(0, 200));
+      return res.ok;
+    } catch (e) {
+      console.error('push:', userId, e.message);
+      return false;
+    }
+  }));
+  return sent.filter(Boolean).length;
+}
+// Casa changes wait a few seconds per person, so a batch of items typed one by one
+// (each one its own request) becomes one notification. When it goes out, each alert is
+// checked again: an item removed or a chore handed back in the meantime is left out.
+const PUSH_DELAY = Number(process.env.PUSH_DELAY_MS || 8000);
+const casaQueue = new Map();
+const actorName = id => userById(id)?.name || agents.find(a => a.id === id)?.id || id;
+function queueCasaAlerts(alerts, actor) {
+  for (const a of alerts) {
+    if (!hasDevices(a.to)) continue;
+    let q = casaQueue.get(a.to);
+    if (!q) {
+      q = {alerts: [], timer: setTimeout(() => {
+        casaQueue.delete(a.to);
+        const casa = spaces.get(SHARED), current = q.alerts.filter(x => stillTrue(casa, x));
+        for (const m of casaMessages(current, actorName, id => casa.lists[id]?.name || '')) void pushTo(a.to, m);
+      }, PUSH_DELAY)};
+      q.timer.unref();
+      casaQueue.set(a.to, q);
+    }
+    q.alerts.push({...a, actor});
+  }
+}
+// Chores deleted in the last two minutes: a copy of one of them is an Undo, not news.
+const deletedChores = new Map();
+function recentlyDeleted(before, ops) {
+  const now = Date.now();
+  for (const [k, at] of deletedChores) if (at < now - 120000) deletedChores.delete(k);
+  const keys = new Set(deletedChores.keys());
+  for (const op of ops) {
+    const c = op.collection === 'chores' && op.patch.deleted === true && own(before.chores, op.id);
+    if (c) deletedChores.set(choreKey(c), now);
+  }
+  return keys;
+}
+// Meeting reminders: checked every few seconds; the ones sent are kept in the database for
+// two days, so a restart within a reminder's minute does not send it again.
+db.exec('CREATE TABLE IF NOT EXISTS push_sent (key TEXT PRIMARY KEY, at INTEGER NOT NULL)');
+const ZONE = process.env.TZ || 'America/Sao_Paulo';
+function localClock(now = new Date()) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {timeZone: ZONE, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'}).formatToParts(now).map(x => [x.type, x.value]));
+  return {date: `${p.year}-${p.month}-${p.day}`, minutes: Number(p.hour) * 60 + Number(p.minute)};
+}
+function remindMeetings() {
+  const {date, minutes} = localClock();
+  db.prepare('DELETE FROM push_sent WHERE at < ?').run(Date.now() - 2 * 86400000);
+  // Near midnight, tomorrow's first meetings are due too.
+  const days = [[date, minutes], ...(minutes >= 24 * 60 - 15 ? [[shiftDay(date, 1), minutes - 24 * 60]] : [])];
+  for (const u of users) {
+    if (!hasDevices(u.id)) continue;
+    for (const [day, at] of days) for (const r of meetingReminders(spaces.get(u.id), day, at)) {
+      const key = `${u.id}|${r.key}`;
+      if (db.prepare('INSERT OR IGNORE INTO push_sent VALUES (?,?)').run(key, Date.now()).changes === 0) continue;
+      const {key: _, ...message} = r;
+      void pushTo(u.id, message, {TTL: 600, urgency: 'high'});
+    }
+  }
+}
+
 function today() { return new Intl.DateTimeFormat('en-CA', {timeZone: process.env.TZ || 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit'}).format(new Date()); }
 function ensureDay() {
   for (const u of users) {
@@ -120,6 +224,7 @@ function ensureDay() {
 }
 ensureDay();
 setInterval(ensureDay, 30000).unref();
+setInterval(remindMeetings, Number(process.env.PUSH_TICK_MS || 20000)).unref();
 
 // What a person sees: their own space with Casa (the shared collections) in it.
 const viewFor = user => ({...spaces.get(user.id), ...Object.fromEntries(SHARED_COLLECTIONS.map(c => [c, spaces.get(SHARED)[c]]))});
@@ -129,7 +234,7 @@ const viewFor = user => ({...spaces.get(user.id), ...Object.fromEntries(SHARED_C
 function commit(ops, space, who) {
   const fresh = ops.filter(op => !db.prepare('SELECT id FROM operations WHERE id=?').get(op.opId));
   if (!fresh.length) return;
-  const next = structuredClone(spaces.get(space));
+  const before = spaces.get(space), next = structuredClone(before);
   for (const op of fresh) apply(next, op);
   db.exec('BEGIN');
   try {
@@ -139,6 +244,7 @@ function commit(ops, space, who) {
     spaces.set(space, next);
   } catch (e) { db.exec('ROLLBACK'); throw e; }
   notify(space);
+  if (space === SHARED) queueCasaAlerts(casaAlerts(before, fresh, who.user, users.map(u => u.id), recentlyDeleted(before, fresh)), who.user);
 }
 
 // ---------- Credit card bills ----------
@@ -486,6 +592,29 @@ const server = http.createServer(async (req, res) => {
       if (route('POST', '/api/passkey/delete')) {
         db.prepare('DELETE FROM passkeys WHERE id=? AND user_id=?').run(String((await body(req)).id || ''), user.id);
         return json(200, {ok: true});
+      }
+      if (route('GET', '/api/push')) return json(200, {key: vapid.publicKey});
+      if (route('POST', '/api/push/subscribe')) {
+        const {endpoint, keys, previous} = await body(req);
+        if (typeof endpoint !== 'string' || endpoint.length > 2000 || !pushEndpointOk(endpoint) || b64Bytes(keys?.p256dh) !== 65 || b64Bytes(keys?.auth) !== 16) return json(400, {error: 'Inscrição inválida'});
+        // A renewed subscription (pushsubscriptionchange) replaces the old one.
+        if (typeof previous === 'string' && previous !== endpoint) db.prepare('DELETE FROM push_subscriptions WHERE endpoint=? AND user_id=?').run(previous, user.id);
+        db.prepare('INSERT OR REPLACE INTO push_subscriptions(endpoint,user_id,keys,device) VALUES (?,?,?,?)').run(endpoint, user.id, JSON.stringify({p256dh: keys.p256dh, auth: keys.auth}), deviceName(req.headers['user-agent']));
+        // At most 10 devices per person; the oldest go first.
+        db.prepare('DELETE FROM push_subscriptions WHERE user_id=? AND endpoint NOT IN (SELECT endpoint FROM push_subscriptions WHERE user_id=? ORDER BY created DESC, rowid DESC LIMIT 10)').run(user.id, user.id);
+        return json(200, {ok: true});
+      }
+      if (route('POST', '/api/push/unsubscribe')) {
+        db.prepare('DELETE FROM push_subscriptions WHERE endpoint=? AND user_id=?').run(String((await body(req)).endpoint || ''), user.id);
+        return json(200, {ok: true});
+      }
+      // A test to this device (`endpoint`), or to all of this person's devices.
+      if (route('POST', '/api/push/test')) {
+        if (limited(req)) return json(429, {error: 'Aguarde um minuto e tente novamente.'});
+        const endpoint = String((await body(req)).endpoint || '') || undefined;
+        if (!db.prepare('SELECT 1 FROM push_subscriptions WHERE user_id=? AND (? IS NULL OR endpoint=?)').get(user.id, endpoint ?? null, endpoint ?? null)) return json(404, {error: 'Este aparelho não está inscrito. Desligue e ligue as notificações.'});
+        const sent = await pushTo(user.id, {title: 'Notas', body: 'Notificações ligadas neste aparelho.', tag: 'teste', url: '/?aba=ajustes'}, {}, endpoint);
+        return sent ? json(200, {ok: true}) : json(502, {error: 'O serviço de notificações recusou o envio.'});
       }
       if (route('POST', '/api/logout')) {
         res.setHeader('Set-Cookie', 'session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');

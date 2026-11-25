@@ -132,6 +132,7 @@ async function sync() {
         if (owner && owner !== me.id) { state = initialState(); queue = []; }
         owner = me.id; save();
         if (protectedServer) void loadPasskeys();
+        void refreshPush();
       }
       // Fetch first so an empty new device never uploads its initial defaults.
       let remote = await (await api('/api/state')).json();
@@ -932,6 +933,7 @@ function viewAjustes() {
       ${tabPrefs(state).contas ? `<div class="n-row n-plain"><button class="n-text" data-push="monthly">Contas recorrentes</button><span class="n-meta">${monthly}</span><span class="n-chev" aria-hidden="true">›</span></div>` : ''}
     </div>
     ${protectedServer ? passkeysHtml() : ''}
+    ${pushHtml()}
     <div class="n-group-h"><h2>Dados</h2></div>
     <div class="n-list">
       <div class="n-row n-plain"><button class="n-text" data-export>Exportar backup</button><span class="n-chev" aria-hidden="true">›</span></div>
@@ -1677,6 +1679,103 @@ async function createPasskey() {
   } finally { void prepareRegister(); }
 }
 
+// ---------- Notifications ----------
+// Web Push: the server sends, the service worker shows. On iPhone and iPad only the app added
+// to the Home Screen can receive them, and permission must be asked from a tap.
+const pushSupported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const iOSDevice = /iPhone|iPad/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const iosBrowser = iOSDevice && !(navigator.standalone === true || matchMedia('(display-mode: standalone)').matches);
+let pushOn = false, pushBusy = false;
+const pushSubscription = async () => pushSupported ? (await navigator.serviceWorker.ready).pushManager.getSubscription() : null;
+const sendSubscription = sub => api('/api/push/subscribe', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(sub.toJSON())});
+const sameKey = (sub, key) => { const k = sub.options?.applicationServerKey; return !k || b64u.enc(k) === key; };
+// On each opening, a device already subscribed tells the server again (it may have signed in
+// as someone else, or the server may have dropped it). A subscription made with other server
+// keys can never work again: it is dropped, and the switch shows off.
+async function refreshPush() {
+  try {
+    let sub = Notification.permission === 'granted' ? await pushSubscription() : null;
+    if (sub) {
+      const {key} = await (await api('/api/push')).json();
+      if (!sameKey(sub, key)) { await sub.unsubscribe(); sub = null; }
+    }
+    pushOn = !!sub;
+    if (sub) await sendSubscription(sub);
+  } catch {}
+  if (tab === 'ajustes') render();
+}
+// The worker that shows notifications must be this version's: after an update the new one
+// may still be waiting for the old windows to close.
+async function currentWorker() {
+  const reg = await navigator.serviceWorker.ready;
+  await reg.update().catch(() => {});
+  const w = reg.installing || reg.waiting;
+  if (w) await new Promise(done => {
+    const check = () => { if (w.state === 'installed') w.postMessage('skip-waiting'); if (w.state === 'activated' || w.state === 'redundant') done(); };
+    w.addEventListener('statechange', check);
+    check();
+    setTimeout(done, 15000);
+  });
+  return navigator.serviceWorker.ready;
+}
+async function setPush(on) {
+  if (pushBusy) return;
+  pushBusy = true;
+  try {
+    if (on) {
+      if (await Notification.requestPermission() !== 'granted') { toast('Permita notificações para o Notas nos ajustes do sistema.'); return; }
+      const {key} = await (await api('/api/push')).json();
+      const reg = await currentWorker();
+      let sub = await reg.pushManager.getSubscription();
+      if (sub && !sameKey(sub, key)) { await sub.unsubscribe(); sub = null; }
+      sub ||= await reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: b64u.dec(key)});
+      await sendSubscription(sub);
+      pushOn = true;
+      toast('Notificações ligadas neste aparelho.');
+    } else {
+      await stopPush();
+    }
+  } catch (e) {
+    toast(e.message === 'login' ? 'Entre para ligar as notificações.' : on ? 'Não foi possível ligar as notificações.' : 'Não foi possível desligar as notificações.');
+  } finally { pushBusy = false; render(); }
+}
+// Off on this device: the server forgets it and the browser drops the subscription.
+async function stopPush() {
+  const sub = await pushSubscription().catch(() => null);
+  if (sub) { await api('/api/push/unsubscribe', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({endpoint: sub.endpoint})}).catch(() => {}); await sub.unsubscribe().catch(() => {}); }
+  pushOn = false;
+}
+async function testPush() {
+  try {
+    const sub = await pushSubscription();
+    await api('/api/push/test', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({endpoint: sub?.endpoint || ''})});
+    toast('Enviada. Deve chegar em alguns segundos.');
+  } catch (e) { toast(e.message === 'login' ? 'Entre para testar.' : e.message || 'Não foi possível enviar.'); }
+}
+function pushHtml() {
+  const head = '<div class="n-group-h"><h2>Notificações</h2></div>';
+  const what = 'Avisa quando outra pessoa põe algo nas Compras ou cria um afazer para você ou para todos, e 10 e 5 minutos antes de cada reunião.';
+  if (iosBrowser) return `${head}<p class="n-note">No iPhone e no iPad, adicione o Notas à Tela de Início (Compartilhar → Adicionar à Tela de Início) e abra por lá para ligar as notificações.</p>`;
+  if (!pushSupported) return `${head}<p class="n-note">Este navegador não recebe notificações.</p>`;
+  const denied = Notification.permission === 'denied';
+  return `${head}<div class="n-list"><label class="n-row n-plain"><span class="n-text">Neste aparelho</span><input type="checkbox" class="n-switch" data-push-toggle ${pushOn ? 'checked' : ''} ${denied ? 'disabled' : ''}></label>
+    ${pushOn ? '<div class="n-row n-plain"><button class="n-text n-accent" data-push-test>Enviar notificação de teste</button></div>' : ''}</div>
+    <p class="n-note">${denied ? 'As notificações do Notas estão bloqueadas nos ajustes do sistema ou do navegador. ' : ''}${what} Ligue em cada aparelho onde quer recebê-las.</p>`;
+}
+// A tapped notification opens its place: in a window already open (message from the service
+// worker) or in a new one (?aba= and ?lista= in the address). Whatever was on top (a sheet,
+// a page over the tabs) closes first.
+function openFromNotification(href) {
+  const params = new URL(href, location.href).searchParams, aba = params.get('aba'), lista = params.get('lista');
+  if (!aba || !TABS.some(([id]) => id === aba)) return;
+  if ($('#sheet')?.open) closeSheet();
+  const covered = navigation.current !== 'root';
+  if (covered) navigation.back({animate: false});
+  switchTab(aba);
+  // The router takes a moment to settle after going back before it opens another page.
+  if (aba === 'compras' && lista && (lista === 'compras' || (state.lists[lista] && !state.lists[lista].deleted))) setTimeout(() => openCasa(lista), covered ? 350 : 0);
+}
+
 async function passkeyLogin() {
   if (!fresh(loginOptions)) await prepareLogin();
   if (!loginOptions) throw loginOptionsError || Error('Sem conexão com o servidor.');
@@ -1752,6 +1851,8 @@ async function exportBackup() {
 async function logout() {
   await sync();
   if (queue.length && !confirm('Há alterações que ainda não foram enviadas e serão perdidas. Sair mesmo assim?')) return;
+  // This device stops receiving the notifications of the person leaving.
+  await stopPush();
   await fetch('/api/logout', {method: 'POST'}).catch(() => {});
   events?.close(); events = null; clearLocal(); needsLogin = true; render(); loginSheet();
 }
@@ -1820,6 +1921,7 @@ document.addEventListener('click', e => {
   else if ('logout' in d) logout();
   else if ('login' in d) loginSheet();
   else if ('newPasskey' in d) createPasskey();
+  else if ('pushTest' in d) testPush();
   else if (d.editItem) itemSheet(d.editItem);
   else if ('clearCart' in d) {
     const cart = listed(state).filter(i => i.done);
@@ -1830,6 +1932,7 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('change', e => {
   if (e.target.matches('[data-tab-pref]')) commit('prefs', 'tabs', {[e.target.dataset.tabPref]: e.target.checked});
+  if (e.target.matches('[data-push-toggle]')) setPush(e.target.checked);
   if (e.target.matches('[data-pick-day]') && e.target.value) { const content = e.target.closest('.page-content'); historyDate = e.target.value; render(); if (content) content.scrollLeft = 0; }
 });
 $('#sheet').addEventListener('click', e => {
@@ -2655,6 +2758,7 @@ setInterval(() => { if (desktop() && (tab === 'hoje' || tab === 'reunioes') && !
 // Activate updates on the next opening; never force a reload over unsynced edits.
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js', {updateViaCache: 'none'}).catch(e => console.warn('Offline:', e.message));
+  navigator.serviceWorker.addEventListener('message', e => { if (typeof e.data?.open === 'string') openFromNotification(e.data.open); });
 }
 
 window.addEventListener('online', () => sync());
@@ -2676,4 +2780,5 @@ const navigation = createNavigation({
   onPage(name, el) { sub = {name, el}; render(); },
 });
 render();
+if (new URLSearchParams(location.search).has('aba')) { openFromNotification(location.href); history.replaceState(history.state, '', '/'); }
 sync().then(() => { if (needsLogin) loginSheet(); else { ensureLocal().then(() => { render(); void sync(); }); } });
