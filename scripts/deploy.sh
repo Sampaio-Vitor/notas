@@ -8,7 +8,7 @@ revision=${2:?Missing full commit SHA}
 registry_user=${3:-}
 [[ $revision =~ ^[a-f0-9]{40}$ ]] || { echo 'Invalid revision' >&2; exit 2; }
 if [[ ! $image =~ ^ghcr\.io/[a-z0-9_./-]+@sha256:[a-f0-9]{64}$ ]]; then
-  [[ ${DEPLOY_ALLOW_LOCAL:-0} == 1 && $image =~ ^notas-ci-test:[a-z0-9-]+$ ]] || { echo 'Use an immutable GHCR digest' >&2; exit 2; }
+  [[ ${DEPLOY_ALLOW_LOCAL:-0} == 1 && $image =~ ^(notas-ci-test:[a-z0-9-]+|notas:sha-[a-f0-9]{40})$ ]] || { echo 'Use an immutable GHCR digest' >&2; exit 2; }
 fi
 
 app_dir=${DEPLOY_DIR:-$HOME/notas}

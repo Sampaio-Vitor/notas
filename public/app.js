@@ -1027,9 +1027,11 @@ function render() {
     $('.n-page-action', sub.el).innerHTML = page.action;
     sub.el.dataset.action = page.action ? 'yes' : 'no';
   }
+  drawMeetingPop();
 }
 
 function switchTab(id) {
+  closeMeetingPop();
   // The Hoje tab always comes back to today.
   if (id === 'hoje') hojeDate = railDate = null;
   // The Casa tab (or its sidebar entry) always opens on the overview.
@@ -1046,6 +1048,7 @@ function switchTab(id) {
 // ---------- Sheets ----------
 
 function openSheet(html, ready) {
+  closeMeetingPop();
   $('#sheet-content').innerHTML = html;
   const dialog = $('#sheet');
   if (!dialog.open) dialog.showModal();
@@ -1101,6 +1104,27 @@ function editOccurrence(repeatId, date) {
   if (!t) { taskSheet({repeatId}); return; }
   const {id: _, ...fields} = t;
   commit('tasks', id, fields).then(() => taskSheet({id}));
+}
+function toggleOccurrence(repeatId, date) {
+  const id = occurrenceId(repeatId, date);
+  if (state.tasks[id]) { toggleTask(id); return; }
+  const t = dayTasks(date).find(t => t.id === id);
+  if (!t) return;
+  const {id: _, ...fields} = t;
+  settle(id);
+  commit('tasks', id, {...fields, done: true});
+}
+function deleteOccurrence(repeatId, date) {
+  const id = occurrenceId(repeatId, date);
+  if (state.tasks[id]) { deleteTasks([id]); return; }
+  const t = dayTasks(date).find(t => t.id === id);
+  if (!t) return;
+  const {id: _, ...fields} = t;
+  commit('tasks', id, {...fields, deleted: true});
+  toast('Reunião excluída só neste dia.', () => {
+    commit('tasks', id, {...fields, deleted: false});
+    toast('Exclusão desfeita.');
+  });
 }
 function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, time: presetTime} = {}) {
   const task = id ? state.tasks[id] : null;
@@ -1890,6 +1914,13 @@ document.addEventListener('click', e => {
   else if ('back' in d) navigation.back();
   else if (d.step) toggleStep(d.stepTask, d.step);
   else if (d.steps) showSteps(d.steps);
+  else if (d.toggleOcc) toggleOccurrence(d.toggleOcc, d.date);
+  else if (d.meetingPop) openMeetingPop({id: d.meetingPop, date: d.date}, b.closest('.d-ev, .d-evt, .d-evt-chip') || b);
+  else if (d.meetingOcc) openMeetingPop({repeatId: d.meetingOcc, date: d.date}, b.closest('.d-ev, .d-evt, .d-evt-chip') || b);
+  else if ('popClose' in d) closeMeetingPop();
+  else if ('popToggle' in d) toggleMeetingPop();
+  else if ('popEdit' in d) editMeetingPop();
+  else if ('popDelete' in d) deleteMeetingPop();
   else if (d.toggle && d.collection === 'tasks' && projected(d.toggle)) { const {id, ...fields} = projected(d.toggle); commit('tasks', id, {...fields, done: true}); }
   else if (d.toggle) { const c = d.collection; c === 'tasks' ? toggleTask(d.toggle) : c === 'shopping' ? toggleCart(d.toggle) : c === 'chores' ? toggleChore(d.toggle) : commit(c, d.toggle, {done: !state[c][d.toggle].done}); }
   else if (d.casaOpen) openCasa(d.casaOpen);
@@ -2278,7 +2309,7 @@ const KEY = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? 
 // Week shown in Agenda (its Monday; null follows today), keyboard cursor, range anchor.
 // The private week paints every meeting as the same dark block, with no text and no
 // current-time line, so a screenshot shows only when you are busy.
-let weekStart = null, privateWeek = false, cursor = null, anchor = null, finder = null, dragIds = null;
+let weekStart = null, privateWeek = false, cursor = null, anchor = null, finder = null, dragIds = null, meetingPop = null;
 
 // Sections have no color of their own; the order in Ajustes picks one.
 const SECTION_COLORS = ['#64d2ff', '#bf5af2', '#ff9f0a', '#30d158', '#ff375f', '#5e5ce6', '#ffd60a', '#ac8e68'];
@@ -2339,19 +2370,24 @@ function hojeRail() {
   const prefs = tabPrefs(state), cards = [], now = nowMinutes();
   // The agenda card pages through days on its own (railDate; null is today) and follows Hoje when it pages.
   const date = railDate || today(), past = date < today(), isToday = date === today();
-  const meetings = byTime(todayMeetings(date));
+  const meetings = byTime(date > today() ? weekMeetings(date) : todayMeetings(date));
   if (prefs.reunioes || meetings.length || railDate) {
     let marked = false;
     const rows = meetings.map(t => {
       const start = t.time ? minutes(t.time) : null, soon = isToday && start !== null && start > now && start - now <= 60;
       const line = isToday && !marked && start !== null && start > now ? (marked = true, `<div class="d-now"><b>${clock(now)}</b><hr></div>`) : '';
-      const gone = t.done || past || (isToday && start !== null && minutes(meetingEnd(t)) <= now);
-      return `${line}<button class="d-ev ${gone ? 'is-past' : ''}" data-edit-task="${t.id}"><b>${t.time ? esc(timeLabel(t)) : '·'}</b><span style="--c:${sectionColor(t.section)}">${esc(t.text)}<small class="${soon ? 'n-accent' : ''}">${soon ? `em ${start - now} min` : esc(sectionName(t.section))}</small></span></button>`;
+      const gone = past || (isToday && start !== null && minutes(meetingEnd(t)) <= now);
+      const timeHtml = t.time ? (t.meeting || t.end ? `${esc(shortTime(t.time))}<br>${esc(shortTime(meetingEnd(t)))}` : esc(shortTime(t.time))) : '·';
+      const openAttr = t.repeats ? `data-meeting-occ="${t.id}" data-date="${date}"` : `data-meeting-pop="${t.id}" data-date="${date}"`;
+      const toggleAttr = t.repeats ? `data-toggle-occ="${t.id}" data-date="${date}"` : `data-toggle="${t.id}" data-collection="tasks"`;
+      const popOn = isMeetingPopTarget(t, date) ? 'is-pop-open' : '';
+      return `${line}<div class="d-ev ${t.done ? 'is-done' : ''} ${gone && !t.done ? 'is-past' : ''} ${t.done && settling.has(t.id) ? 'is-settling' : ''} ${popOn}" ${t.repeats ? '' : `data-row="${t.id}"`}><b class="d-ev-time">${timeHtml}</b><button class="d-ev-body" ${openAttr} style="--c:${sectionColor(t.section)}"><span class="d-ev-name">${esc(t.text)}</span><small class="${!t.done && soon ? 'n-accent' : ''}">${!t.done && soon ? `em ${start - now} min` : esc(sectionName(t.section))}</small></button><button class="n-check d-ev-check" ${toggleAttr} aria-pressed="${!!t.done}" aria-label="${t.done ? 'Desmarcar' : 'Concluir'} ${esc(t.text)}" title="${t.done ? 'Desmarcar' : 'Marcar como concluída'}">${ICONS.check}</button></div>`;
     }).join('');
     const title = isToday ? 'Agenda de hoje' : `Agenda · ${dayTitle(date)}`;
+    const count = meetings.length ? `<span class="d-card-count">${doneCount(meetings)}/${meetings.length}</span>` : '';
     const steps = `<span class="d-card-steps">${isToday ? '' : '<button class="n-link" data-rail-day="0">Hoje</button>'}<button class="d-tool" data-rail-day="-1" aria-label="Agenda do dia anterior" title="Dia anterior">${ICONS.prev}</button><button class="d-tool" data-rail-day="1" aria-label="Agenda do próximo dia" title="Próximo dia">${ICONS.next}</button>${prefs.reunioes ? '<button class="n-link" data-tab="reunioes">Semana</button>' : ''}</span>`;
     const empty = isToday ? 'Nada na agenda hoje.' : 'Nada na agenda neste dia.';
-    cards.push(`<section class="d-card"><div class="d-card-h"><h2>${title}</h2>${steps}</div>${rows || `<p class="d-card-empty">${empty}</p>`}</section>`);
+    cards.push(`<section class="d-card"><div class="d-card-h"><h2>${title}${count}</h2>${steps}</div>${rows || `<p class="d-card-empty">${empty}</p>`}</section>`);
   }
   if (prefs.contas) {
     const day = Number(today().slice(8, 10));
@@ -2387,15 +2423,21 @@ function deskReunioes() {
   const y = m => (m - first) / 60 * HOUR;
   const cols = `--days:${days.length}`;
   const block = (m, date) => {
-    const {start, stop} = m, gone = m.done || date < today() || (date === today() && stop <= now);
-    const box = `top:${y(start) + 1}px;height:${Math.max(y(stop) - y(start) - 2, 12)}px;left:calc(${m.lane} * 100% / ${m.lanes} + 3px);width:calc(100% / ${m.lanes} - 6px)`;
-    const open = m.repeats ? `data-edit-occurrence="${m.id}" data-date="${date}"` : `data-edit-task="${m.id}" data-row="${m.id}"`;
-    if (privateWeek) return `<button class="d-evt is-private" ${open} aria-label="Ocupado, ${timeLabel(m)}" style="${box}"></button>`;
-    return `<button class="d-evt ${gone ? 'is-past' : ''} ${m.done ? 'is-done' : ''}" ${open} style="--c:${sectionColor(m.section)};${box}" title="${esc(m.text)}, ${timeLabel(m)} · ${esc(sectionName(m.section))}${m.repeats ? ` · ${esc(repeatLabel(m))}` : ''}"><b>${esc(m.text)}</b><span>${timeLabel(m)}</span></button>`;
+    const {start, stop} = m, gone = date < today() || (date === today() && stop <= now);
+    const heightPx = Math.max(y(stop) - y(start) - 2, 18);
+    const box = `top:${y(start) + 1}px;height:${heightPx}px;left:calc(${m.lane} * 100% / ${m.lanes} + 3px);width:calc(100% / ${m.lanes} - 6px)`;
+    if (privateWeek) {
+      const open = m.repeats ? `data-edit-occurrence="${m.id}" data-date="${date}"` : `data-edit-task="${m.id}" data-row="${m.id}"`;
+      return `<button class="d-evt is-private" ${open} aria-label="Ocupado, ${timeLabel(m)}" style="${box}"></button>`;
+    }
+    const open = m.repeats ? `data-meeting-occ="${m.id}" data-date="${date}"` : `data-meeting-pop="${m.id}" data-date="${date}"`;
+    const toggle = m.repeats ? `data-toggle-occ="${m.id}" data-date="${date}"` : `data-toggle="${m.id}" data-collection="tasks"`;
+    const popOn = isMeetingPopTarget(m, date) ? 'is-pop-open' : '';
+    return `<div class="d-evt ${gone && !m.done ? 'is-past' : ''} ${m.done ? 'is-done' : ''} ${m.done && settling.has(m.id) ? 'is-settling' : ''} ${heightPx < 34 ? 'is-short' : ''} ${popOn}" ${m.repeats ? '' : `data-row="${m.id}"`} style="--c:${sectionColor(m.section)};${box}" title="${esc(m.text)}, ${timeLabel(m)} · ${esc(sectionName(m.section))}${m.repeats ? ` · ${esc(repeatLabel(m))}` : ''}"><button class="d-evt-hit" ${open}><b>${esc(m.text)}</b><span>${timeLabel(m)}</span></button><button class="d-evt-check" ${toggle} aria-pressed="${!!m.done}" aria-label="${m.done ? 'Desmarcar' : 'Concluir'} ${esc(m.text)}" title="${m.done ? 'Desmarcar' : 'Marcar como concluída'}">${ICONS.check}</button></div>`;
   };
   const head = `<div class="d-wk-h" style="${cols}"><span></span>${days.map(d => `<div class="d-wk-day ${d.date === today() ? 'is-today' : ''}"><small>${WEEK[weekday(d.date)].slice(0, 3)}</small><b>${Number(d.date.slice(8, 10))}</b></div>`).join('')}</div>`;
   const untimed = !privateWeek && days.some(d => d.list.some(m => !m.time))
-    ? `<div class="d-wk-all" style="${cols}"><span>Sem horário</span>${days.map(d => `<div>${d.list.filter(m => !m.time).map(m => `<button class="d-chip d-evt-chip ${m.done ? 'is-done' : ''}" ${m.repeats ? `data-edit-occurrence="${m.id}" data-date="${d.date}"` : `data-edit-task="${m.id}"`} style="--c:${sectionColor(m.section)}">${esc(m.text)}</button>`).join('')}</div>`).join('')}</div>` : '';
+    ? `<div class="d-wk-all" style="${cols}"><span>Sem horário</span>${days.map(d => `<div>${d.list.filter(m => !m.time).map(m => `<div class="d-chip d-evt-chip ${m.done ? 'is-done' : ''} ${isMeetingPopTarget(m, d.date) ? 'is-pop-open' : ''}" ${m.repeats ? '' : `data-row="${m.id}"`} style="--c:${sectionColor(m.section)}"><button class="d-evt-chip-hit" ${m.repeats ? `data-meeting-occ="${m.id}" data-date="${d.date}"` : `data-meeting-pop="${m.id}" data-date="${d.date}"`}>${esc(m.text)}</button><button class="d-evt-check" ${m.repeats ? `data-toggle-occ="${m.id}" data-date="${d.date}"` : `data-toggle="${m.id}" data-collection="tasks"`} aria-pressed="${!!m.done}" aria-label="${m.done ? 'Desmarcar' : 'Concluir'} ${esc(m.text)}" title="${m.done ? 'Desmarcar' : 'Marcar como concluída'}">${ICONS.check}</button></div>`).join('')}</div>`).join('')}</div>` : '';
   const hours = [];
   for (let m = first + 60; m < last; m += 60) hours.push(`<span style="top:${y(m)}px">${clock(m)}</span>`);
   const nowLine = !privateWeek && days.some(d => d.date === today()) && now >= first && now <= last;
@@ -2512,7 +2554,7 @@ function finderItems(q) {
   return [...go, ...actions, ...tasks, ...repeats, ...bills, ...shop, ...casa].filter(x => itemKey(`${x.text} ${x.sub || ''} ${x.group}`).includes(key)).slice(0, 40);
 }
 function openFinder(q = '') {
-  closeMenu();
+  closeMenu(); closeMeetingPop();
   finder = {q, i: 0, items: []};
   const el = $('#finder');
   el.innerHTML = `<div class="d-finder-box" role="dialog" aria-modal="true" aria-label="Buscar"><label class="d-finder-in">${ICONS.search}<input id="finder-q" value="${esc(q)}" placeholder="Buscar tarefas, reuniões, contas e comandos" autocomplete="off" role="combobox" aria-expanded="true" aria-controls="finder-list"><kbd>esc</kbd></label><div class="d-finder-list" id="finder-list" role="listbox"></div><p class="d-finder-foot">↑↓ para escolher · Return para abrir</p></div>`;
@@ -2571,6 +2613,7 @@ function itemMenu(id) {
   return [menuItem(i.done ? 'Tirar do carrinho' : 'Pôr no carrinho', `data-ctx="item-done" data-id="${esc(id)}"`), menuItem('Editar…', `data-ctx="item-edit" data-id="${esc(id)}"`), '<hr>', menuItem('Remover da lista', `data-ctx="item-remove" data-id="${esc(id)}"`, '', 'is-danger')].join('');
 }
 function openMenu(x, y, html) {
+  closeMeetingPop();
   const el = $('#ctx');
   el.innerHTML = html; el.hidden = false;
   el.style.left = `${Math.max(8, Math.min(x, innerWidth - el.offsetWidth - 8))}px`;
@@ -2608,10 +2651,101 @@ document.addEventListener('contextmenu', e => {
   if (task && task.matches('.n-row')) { cursor = task.dataset.row; $$('.n-row.is-cursor').forEach(r => r.classList.remove('is-cursor')); task.classList.add('is-cursor'); }
   openMenu(e.clientX, e.clientY, html);
 });
-document.addEventListener('pointerdown', e => { if (!e.target.closest('#ctx')) closeMenu(); }, true);
-addEventListener('blur', closeMenu);
-addEventListener('resize', closeMenu);
-document.addEventListener('scroll', closeMenu, true);
+document.addEventListener('pointerdown', e => {
+  if (!e.target.closest('#ctx')) closeMenu();
+  if (meetingPop && !e.target.closest('#meeting-pop, [data-meeting-pop], [data-meeting-occ]')) closeMeetingPop();
+}, true);
+addEventListener('blur', () => { closeMenu(); closeMeetingPop(); });
+addEventListener('resize', () => { closeMenu(); closeMeetingPop(); });
+document.addEventListener('scroll', () => { closeMenu(); closeMeetingPop(); }, true);
+
+// ----- Popover rápido de reunião (Agenda e Agenda de hoje) -----
+
+function isMeetingPopTarget(m, date) {
+  if (!meetingPop) return false;
+  if (meetingPop.id) return !m.repeats && m.id === meetingPop.id;
+  return !!m.repeats && m.id === meetingPop.repeatId && date === meetingPop.date;
+}
+function resolveMeetingPop() {
+  if (!meetingPop) return null;
+  if (meetingPop.id) {
+    const t = state.tasks[meetingPop.id];
+    return t && !t.deleted ? {item: t, date: t.date || meetingPop.date} : null;
+  }
+  const occId = occurrenceId(meetingPop.repeatId, meetingPop.date);
+  const existing = state.tasks[occId];
+  if (existing && !existing.deleted) {
+    meetingPop.id = occId;
+    meetingPop.repeatId = '';
+    return {item: existing, date: existing.date || meetingPop.date};
+  }
+  const r = state.repeats[meetingPop.repeatId];
+  return r && !r.deleted ? {item: {...r, repeats: true, done: false}, date: meetingPop.date} : null;
+}
+function openMeetingPop({id = '', repeatId = '', date = ''}, anchorEl) {
+  closeMenu();
+  const same = meetingPop && ((id && meetingPop.id === id) || (repeatId && meetingPop.repeatId === repeatId && meetingPop.date === date));
+  if (same) { closeMeetingPop(); return; }
+  const r = anchorEl.getBoundingClientRect();
+  meetingPop = {id, repeatId, date, rect: {top: r.top, right: r.right, bottom: r.bottom, left: r.left}};
+  render();
+  $('#meeting-pop')?.focus({preventScroll: true});
+}
+function closeMeetingPop() {
+  const el = $('#meeting-pop');
+  if (!meetingPop && el?.hidden) return;
+  meetingPop = null;
+  if (el) { el.hidden = true; el.innerHTML = ''; }
+  $$('.is-pop-open').forEach(node => node.classList.remove('is-pop-open'));
+}
+function drawMeetingPop() {
+  const el = $('#meeting-pop');
+  if (!el) return;
+  if (!meetingPop || !desktop() || (tab !== 'hoje' && tab !== 'reunioes')) {
+    if (!el.hidden) { el.hidden = true; el.innerHTML = ''; }
+    meetingPop = null;
+    return;
+  }
+  const resolved = resolveMeetingPop();
+  if (!resolved) { closeMeetingPop(); return; }
+  const {item: m, date} = resolved;
+  const repeat = m.repeats ? m : (m.repeat && state.repeats[m.repeat] && !state.repeats[m.repeat].deleted ? state.repeats[m.repeat] : null);
+  const dayText = date === today() ? 'Hoje' : date ? cap(dayShort(date)) : '';
+  const meta = [dayText, m.time ? timeLabel(m) : '', sectionName(m.section), repeat ? repeatLabel(repeat) : ''].filter(Boolean).join(' · ');
+  el.classList.toggle('is-done', !!m.done);
+  el.style.setProperty('--c', sectionColor(m.section));
+  el.innerHTML = `<div class="d-pop-top"><span class="d-pop-bar" aria-hidden="true"></span><div class="d-pop-info"><div class="d-pop-title">${esc(m.text)}</div><div class="d-pop-meta">${esc(meta)}</div></div><button type="button" class="d-pop-close" data-pop-close aria-label="Fechar">×</button></div>
+    <button type="button" class="d-pop-cta" data-pop-toggle aria-pressed="${!!m.done}">${ICONS.check}<span>${m.done ? 'Concluída · Desmarcar' : 'Marcar como concluída'}</span></button>
+    <div class="d-pop-foot"><button type="button" class="d-pop-act" data-pop-edit>Editar…</button><button type="button" class="d-pop-act is-danger" data-pop-delete>${repeat ? 'Excluir dia' : 'Excluir'}</button></div>`;
+  el.hidden = false;
+  const liveAnchor = $('.is-pop-open');
+  const rect = liveAnchor ? liveAnchor.getBoundingClientRect() : meetingPop.rect;
+  const w = el.offsetWidth, h = el.offsetHeight;
+  const rightX = rect.right + 10, leftX = rect.left - w - 10;
+  const x = rightX + w + 12 <= innerWidth ? rightX : leftX >= 12 ? leftX : Math.max(12, innerWidth - w - 12);
+  const y = Math.max(12, Math.min(rect.top - 8, innerHeight - h - 12));
+  el.style.left = `${Math.round(x)}px`;
+  el.style.top = `${Math.round(y)}px`;
+}
+function toggleMeetingPop() {
+  if (!meetingPop) return;
+  if (meetingPop.id) toggleTask(meetingPop.id);
+  else if (meetingPop.repeatId) toggleOccurrence(meetingPop.repeatId, meetingPop.date);
+}
+function editMeetingPop() {
+  if (!meetingPop) return;
+  const {id, repeatId, date} = meetingPop;
+  closeMeetingPop();
+  if (id) taskSheet({id});
+  else if (repeatId) editOccurrence(repeatId, date);
+}
+function deleteMeetingPop() {
+  if (!meetingPop) return;
+  const {id, repeatId, date} = meetingPop;
+  closeMeetingPop();
+  if (id) deleteTasks([id]);
+  else if (repeatId) deleteOccurrence(repeatId, date);
+}
 
 // ----- Seleção no Backlog, captura rápida, horários livres -----
 
@@ -2640,7 +2774,7 @@ document.addEventListener('dblclick', e => {
   const row = e.target.closest('[data-pick]');
   if (row && !e.target.closest('button')) { taskSheet({id: row.dataset.pick}); return; }
   const col = e.target.closest('[data-slot-day]');
-  if (!col || e.target.closest('button')) return;
+  if (!col || e.target.closest('button, .d-evt')) return;
   const date = col.dataset.slotDay;
   if (date < today()) { toast('Escolha um dia a partir de hoje.'); return; }
   const offset = e.clientY - col.getBoundingClientRect().top;
@@ -2728,6 +2862,9 @@ document.addEventListener('keydown', e => {
     }
     return;
   }
+  if (!$('#meeting-pop').hidden) {
+    if (key === 'Escape') { e.preventDefault(); closeMeetingPop(); return; }
+  }
   if ($('#sheet').open) return;
   if (mod && /^[1-9]$/.test(key)) { const target = mainTabs()[Number(key) - 1]; if (target) { e.preventDefault(); switchTab(target[0]); } return; }
   if (mod && key === ',') { e.preventDefault(); switchTab('ajustes'); return; }
@@ -2762,7 +2899,7 @@ document.addEventListener('keydown', e => {
 });
 
 // The time and the "em N min" labels move with the clock.
-setInterval(() => { if (desktop() && (tab === 'hoje' || tab === 'reunioes') && !finder && $('#ctx').hidden && !dragIds && !document.activeElement?.closest?.('input')) render(); }, 60000);
+setInterval(() => { if (desktop() && (tab === 'hoje' || tab === 'reunioes') && !finder && $('#ctx').hidden && $('#meeting-pop').hidden && !dragIds && !document.activeElement?.closest?.('input')) render(); }, 60000);
 
 // ---------- Lifecycle ----------
 
