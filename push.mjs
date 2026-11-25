@@ -71,7 +71,8 @@ const joinNames = names => {
 
 // Alerts gathered for one person over a few seconds become one notification per kind and
 // actor. `name(id)` gives a person's or agent's name; `listName(id)` a Casa list's.
-// No tag: a later batch must not replace one still unread.
+// No tag anywhere: a notification replacing another with the same tag arrives silently on
+// macOS (only Notification Center is updated), and a later one must not hide one still unread.
 export function casaMessages(alerts, name, listName) {
   const groups = new Map();
   for (const a of alerts) {
@@ -112,7 +113,6 @@ export function meetingReminders(state, date, minutes) {
         key: `${date}|${t.id}|${t.time}|${lead}`,
         title: clip(t.text),
         body: `Começa em ${lead} min · ${t.time}–${meetingEnd(t)}`,
-        tag: `reuniao-${t.id}`,
         url: `/?aba=${aba}`,
       });
     }

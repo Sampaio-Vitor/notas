@@ -613,7 +613,7 @@ const server = http.createServer(async (req, res) => {
         if (limited(req)) return json(429, {error: 'Aguarde um minuto e tente novamente.'});
         const endpoint = String((await body(req)).endpoint || '') || undefined;
         if (!db.prepare('SELECT 1 FROM push_subscriptions WHERE user_id=? AND (? IS NULL OR endpoint=?)').get(user.id, endpoint ?? null, endpoint ?? null)) return json(404, {error: 'Este aparelho não está inscrito. Desligue e ligue as notificações.'});
-        const sent = await pushTo(user.id, {title: 'Notas', body: 'Notificações ligadas neste aparelho.', tag: 'teste', url: '/?aba=ajustes'}, {}, endpoint);
+        const sent = await pushTo(user.id, {title: 'Notas', body: 'Notificações ligadas neste aparelho.', url: '/?aba=ajustes'}, {}, endpoint);
         return sent ? json(200, {ok: true}) : json(502, {error: 'O serviço de notificações recusou o envio.'});
       }
       if (route('POST', '/api/logout')) {

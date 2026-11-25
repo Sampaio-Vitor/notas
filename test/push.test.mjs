@@ -83,6 +83,8 @@ test('meetingReminders: 10 e 5 minutos antes, só reuniões com horário e não 
   assert.deepEqual(at('10:52'), []);
   assert.deepEqual(at('10:55').map(r => r.body), ['Começa em 5 min · 11:00–11:15']);
   assert.notEqual(at('10:50')[0].key, at('10:55')[0].key);
+  // Sem tag: o de 5 min não substitui o de 10 em silêncio (macOS).
+  assert.equal('tag' in at('10:55')[0], false);
   assert.equal(at('10:50')[0].url, '/?aba=hoje');
   // Com a aba Agenda ligada, as reuniões ficam lá.
   state.prefs.tabs = {reunioes: true};
