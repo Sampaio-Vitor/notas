@@ -2,7 +2,7 @@ FROM node:24-alpine
 WORKDIR /app
 COPY --chown=node:node package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
-COPY --chown=node:node server.mjs mcp-espaco.mjs validacao.mjs ./
+COPY --chown=node:node server.mjs mcp-espaco.mjs validacao.mjs push.mjs ./
 COPY --chown=node:node public ./public
 ARG APP_REVISION=dev
 ENV APP_REVISION=$APP_REVISION

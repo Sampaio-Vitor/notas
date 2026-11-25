@@ -20,7 +20,7 @@ function device(answer) {
   const context = vm.createContext({
     fetch, AbortSignal, Response, console: {warn() {}}, navigator: {onLine: true}, EventSource: class {},
     initialState, normalize, apply,
-    report: m => reports.push(m), toast: m => toasts.push(m), closeSheet() {}, render() {}, save() {}, reload() {}, loadPasskeys() {},
+    report: m => reports.push(m), toast: m => toasts.push(m), closeSheet() {}, render() {}, save() {}, reload() {}, loadPasskeys() {}, refreshPush() {},
     exclusive: fn => Promise.resolve().then(fn),
   });
   vm.runInContext(`let state = initialState(), queue = [], busy = false, events = null, online = true, syncError = '', needsLogin = false, protectedServer = false, me = null, people = [], owner = null, sessionLoaded = false; ${syncCode}`, context);

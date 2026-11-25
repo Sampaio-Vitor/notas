@@ -17,6 +17,8 @@ services:
       FINANCE_TOKEN: ${FINANCE_TOKEN:-}
       FINANCE_USER: ${FINANCE_USER:-}
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Defina PUBLIC_ORIGIN com o endereço HTTPS}
+      # Contato enviado aos serviços de push (opcional; padrão: PUBLIC_ORIGIN).
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
       # A porta só existe no loopback: todo acesso passa pelo proxy HTTPS local.
       TRUST_PROXY: "1"
       TZ: America/Sao_Paulo

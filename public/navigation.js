@@ -38,7 +38,7 @@ export function createNavigation({onRoot, onPage, onChange}) {
   document.body.dataset.screen = 'root';
   return {
     push(name) { main.router.navigate(`/page/${name}/`); },
-    back() { if (main.router.history.length > 1) main.router.back(); },
+    back(options) { if (main.router.history.length > 1) main.router.back(options); },
     get current() { return main.el.querySelector('.page-current')?.dataset.name || 'root'; },
   };
 }
