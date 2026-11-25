@@ -2,7 +2,7 @@
 // the space (MCP_TOKENS="robo:<token>:ana"); the space comes from the token, never from an
 // argument. Pure functions: the state goes in, the result and the operations to commit come out.
 import {createHash} from 'node:crypto';
-import {live, sortedSections, occurrenceId, overdueTasks, scheduledTasks, itemKey, linkedCard, tasksForDay, meetingEnd, shiftMonth, own, RESERVED_IDS, billDueDate, monthBills, taskSteps, taskDoneOps} from './public/model.js';
+import {live, sortedSections, origin, occurrenceId, repeatsOn, weekday, toMinutes, fromMinutes, overdueTasks, scheduledTasks, itemKey, linkedCard, tasksForDay, meetingEnd, shiftMonth, own, RESERVED_IDS, billDueDate, monthBills, taskSteps, taskDoneOps} from './public/model.js';
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/, MONTH = /^\d{4}-(0[1-9]|1[0-2])$/, TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 const money = n => new Intl.NumberFormat('pt-BR', {style: 'currency', currency: 'BRL'}).format((n || 0) / 100).replace(/ /g, ' ');
@@ -14,6 +14,12 @@ const validDate = s => {
 };
 
 const quandoArg = {type: 'string', description: '"hoje", "amanha", "backlog" ou uma data AAAA-MM-DD.'};
+const fimArg = {type: 'string', description: 'HH:MM, depois do horario; só com horario. Sem ele, 30 minutos depois.'};
+const reuniaoArg = {type: 'boolean', description: 'true: é uma reunião (aparece na Agenda do app). Só com dia.'};
+const RULES = ['diaria', 'dias_uteis', 'semanal', 'quinzenal', 'mensal'];
+const WEEKDAYS = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sab'];
+const repetirArg = stop => ({type: 'object', description: `Repetição. regra: diaria (todo dia), dias_uteis (seg a sex), semanal (nos "dias"), quinzenal (a cada 2 semanas, nos "dias", contando da primeira ocorrência), mensal (no "dia_do_mes")${stop ? ' ou nao (para de repetir)' : ''}. Sem "dias", o dia da semana da tarefa; sem "dia_do_mes", o dia do mês dela. Ex.: {"regra": "semanal", "dias": ["seg", "qua"]}.`,
+  properties: {regra: {type: 'string', enum: stop ? [...RULES, 'nao'] : RULES}, dias: {type: 'array', items: {type: 'string', enum: WEEKDAYS}, minItems: 1, maxItems: 7}, dia_do_mes: {type: 'integer', minimum: 1, maximum: 31}}, required: ['regra']});
 export const SPACE_TOOLS = [
   {name: 'tarefas_dia', title: 'Tarefas de um dia',
     description: 'As tarefas de um dia (padrão: hoje), por seção, na ordem das seções. Inclui as que as repetições vão criar nesse dia. Cada tarefa traz id, texto, feita, horario e repete; a que tem passos (checklist dentro da tarefa) traz passos, com texto e feito.',
@@ -22,9 +28,13 @@ export const SPACE_TOOLS = [
     description: 'O backlog por seção, as tarefas que ficaram para trás (de dias passados, não feitas) e as agendadas para os próximos dias.',
     inputSchema: {type: 'object', properties: {}}, annotations: {readOnlyHint: true}},
   {name: 'tarefa_criar', title: 'Criar tarefa',
-    description: 'Cria uma tarefa. "quando": hoje, amanha, backlog ou AAAA-MM-DD. "secao" pelo nome (maiúsculas e acentos não importam); sem ela, a primeira seção; se não existir, o erro traz as seções. "horario" (HH:MM) só se a pessoa disse um, e só com dia: tarefa no backlog não tem horário. "chave": um identificador único deste pedido; repetir a chamada com a mesma chave (depois de um erro de rede, por exemplo) devolve a tarefa já criada, com repetida=true, em vez de criar outra. Devolve o id.',
-    inputSchema: {type: 'object', properties: {texto: {type: 'string', minLength: 1, maxLength: 500}, quando: quandoArg, secao: {type: 'string', maxLength: 100}, horario: {type: 'string', description: 'HH:MM; não vale com quando=backlog.'}, chave: {type: 'string', minLength: 1, maxLength: 200, description: 'Opcional. Chave de idempotência: a mesma chave cria a tarefa uma vez só.'}}, required: ['texto', 'quando']},
+    description: 'Cria uma tarefa ou reunião, que pode se repetir. "quando": hoje, amanha, backlog ou AAAA-MM-DD. "secao" pelo nome (maiúsculas e acentos não importam); sem ela, a primeira seção; se não existir, o erro traz as seções. "horario" (HH:MM) só se a pessoa disse um, e só com dia: tarefa no backlog não tem horário. "fim" (HH:MM) é o fim da reunião; sem ele, 30 minutos depois do horario. "reuniao": true para reunião (vai para a Agenda do app), só com dia. "repetir": a regra de repetição, que começa no dia de "quando" (hoje ou depois); veja o campo. "chave": um identificador único deste pedido; repetir a chamada com a mesma chave (depois de um erro de rede, por exemplo) devolve a tarefa já criada, com repetida=true, em vez de criar outra. Devolve o id; com repetição, o id da primeira ocorrência e a regra em "repete".',
+    inputSchema: {type: 'object', properties: {texto: {type: 'string', minLength: 1, maxLength: 500}, quando: quandoArg, secao: {type: 'string', maxLength: 100}, horario: {type: 'string', description: 'HH:MM; não vale com quando=backlog.'}, fim: fimArg, reuniao: reuniaoArg, repetir: repetirArg(false), chave: {type: 'string', minLength: 1, maxLength: 200, description: 'Opcional. Chave de idempotência: a mesma chave cria a tarefa uma vez só.'}}, required: ['texto', 'quando']},
     annotations: {readOnlyHint: false, destructiveHint: false}},
+  {name: 'tarefa_editar', title: 'Editar tarefa',
+    description: 'Muda uma tarefa pelo id que tarefas_dia ou tarefas_backlog devolveu: texto, secao, horario, fim, reuniao e repetir. Só os campos enviados mudam; o dia muda pelo tarefa_mover. horario "" tira o horário. Numa ocorrência de repetição, a mudança vale para a repetição inteira, como no app. "repetir" com uma regra faz a tarefa se repetir a partir do dia dela (ou troca a regra); {"regra": "nao"} para de repetir e deixa esta ocorrência como tarefa avulsa.',
+    inputSchema: {type: 'object', properties: {id: {type: 'string', minLength: 1, maxLength: 200}, texto: {type: 'string', minLength: 1, maxLength: 500}, secao: {type: 'string', maxLength: 100}, horario: {type: 'string', description: 'HH:MM, ou "" para tirar.'}, fim: fimArg, reuniao: reuniaoArg, repetir: repetirArg(true)}, required: ['id']},
+    annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true}},
   {name: 'tarefa_concluir', title: 'Concluir tarefa',
     description: 'Marca uma tarefa como feita (ou desmarca, com feita=false), pelo id que tarefas_dia ou tarefas_backlog devolveu. Marcar como feita marca também os passos que faltavam, como no app. Uma ocorrência de repetição ainda não gravada é gravada antes, como no app.',
     inputSchema: {type: 'object', properties: {id: {type: 'string', minLength: 1, maxLength: 200}, feita: {type: 'boolean'}}, required: ['id']},
@@ -47,7 +57,7 @@ const liveSection = (state, id) => { const s = own(state.sections, id); return s
 const sectionName = (state, id) => liveSection(state, id)?.name || 'Sem seção';
 const taskOut = (state, t) => {
   const steps = taskSteps(state, t);
-  return {id: t.id, texto: t.text, secao: sectionName(state, t.section), feita: !!t.done, horario: t.time || null, repete: !!t.repeat, ...(steps.length ? {passos: steps.map(s => ({texto: s.text, feito: !!s.done}))} : {})};
+  return {id: t.id, texto: t.text, secao: sectionName(state, t.section), feita: !!t.done, horario: t.time || null, ...timing(t), repete: !!t.repeat, ...(steps.length ? {passos: steps.map(s => ({texto: s.text, feito: !!s.done}))} : {})};
 };
 const byTime = list => [...list].sort((a, b) => (a.time ? 0 : 1) - (b.time ? 0 : 1) || (a.time || '').localeCompare(b.time || ''));
 
@@ -92,7 +102,84 @@ function billOut(state, b) {
 // A task created with an idempotency key gets an id derived from the agent and the key, so a
 // repeated call finds it instead of creating another one.
 const keyedId = (agent, key) => `k-${createHash('sha256').update(`${agent}\n${key}`).digest('hex').slice(0, 32)}`;
-const createdOut = (state, t) => ({id: t.id, texto: t.text, secao: sectionName(state, t.section), data: t.date || 'backlog', horario: t.time || null});
+// As the app shows it: the end only for a meeting or a task with one.
+const timing = t => ({...(t.meeting ? {reuniao: true} : {}), ...(t.time && (t.meeting || t.end) ? {fim: meetingEnd(t)} : {})});
+const createdOut = (state, t) => ({id: t.id, texto: t.text, secao: sectionName(state, t.section), data: t.date || 'backlog', horario: t.time || null, ...timing(t)});
+
+function findSection(state, name) {
+  const sections = sortedSections(state);
+  if (!sections.length) throw Error('não há seções no Notas');
+  if (name === undefined || name === '') return sections[0];
+  const section = sections.find(s => itemKey(s.name) === itemKey(name));
+  if (!section) throw Error(`a seção "${name}" não existe; as seções são: ${sectionNames(state).join(', ')}`);
+  return section;
+}
+
+function checkTime(value, field) {
+  const v = value === undefined || value === null ? '' : String(value);
+  if (v && !TIME.test(v)) throw Error(`${field} deve ser HH:MM`);
+  return v;
+}
+function endFor(time, fim) {
+  if (!time) { if (fim) throw Error('fim só vale com horario'); return ''; }
+  if (fim && fim <= time) throw Error('fim precisa ser depois do horario');
+  return fim || meetingEnd({time});
+}
+
+// The rule's fields in a repeat (the app's form: days as weekday digits, Sunday 0; weeks 2 for
+// every other week, counted from the first occurrence on a chosen day; monthDay for monthly).
+function repeatRule(arg, date) {
+  if (typeof arg !== 'object' || arg === null || Array.isArray(arg)) throw Error('repetir deve ser um objeto, como {"regra": "semanal", "dias": ["seg"]}');
+  const rule = itemKey(arg.regra || '').replace(/[\s-]+/g, '_');
+  if (!RULES.includes(rule)) throw Error(`repetir.regra deve ser: ${RULES.join(', ')}`);
+  if (rule === 'mensal') {
+    const day = arg.dia_do_mes === undefined ? Number(date.slice(8, 10)) : arg.dia_do_mes;
+    if (!Number.isInteger(day) || day < 1 || day > 31) throw Error('repetir.dia_do_mes deve ser de 1 a 31');
+    return {days: '', monthDay: day, weeks: 1, start: date};
+  }
+  let days = {diaria: '0123456', dias_uteis: '12345'}[rule];
+  if (!days) {
+    if (arg.dias === undefined) days = String(weekday(date));
+    else {
+      if (!Array.isArray(arg.dias) || !arg.dias.length) throw Error('repetir.dias deve ser uma lista, como ["seg", "qua"]');
+      const set = new Set(arg.dias.map(d => {
+        const i = WEEKDAYS.indexOf(itemKey(d).slice(0, 3));
+        if (i < 0) throw Error(`dia da semana inválido: "${d}"; use ${WEEKDAYS.join(', ')}`);
+        return String(i);
+      }));
+      days = [...set].sort().join('');
+    }
+  }
+  let start = date;
+  // Every other week counts from the first chosen weekday on or after the date, as in the app.
+  if (rule === 'quinzenal') while (!days.includes(String(weekday(start)))) start = addDays(start, 1);
+  return {days, monthDay: 0, weeks: rule === 'quinzenal' ? 2 : 1, start};
+}
+
+const DAY_NAMES = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
+function ruleLabel(r) {
+  if (r.monthDay > 0) return `todo mês, dia ${r.monthDay}`;
+  const names = [...String(r.days)].map(d => DAY_NAMES[d]).join(', ');
+  if (r.weeks > 1) return `a cada 2 semanas (${names})`;
+  if (r.days === '0123456') return 'todo dia';
+  if (r.days === '12345') return 'dias úteis';
+  return `toda semana (${names})`;
+}
+function nextOn(template, from) {
+  for (let i = 0; i <= 400; i++) { const d = addDays(from, i); if (repeatsOn(template, d)) return d; }
+  return '';
+}
+const cleanText = value => {
+  const text = typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
+  if (!text || text.length > 500) throw Error('texto deve ter de 1 a 500 caracteres');
+  return text;
+};
+// A repeat just created: the id of its first occurrence (from the chosen day on) and the rule.
+function createdRepeat(state, rid, template, date) {
+  const first = nextOn(template, date);
+  return {...createdOut(state, {...template, id: first ? occurrenceId(rid, first) : '', date: first || date}), repete: ruleLabel(template), repeticao: rid};
+}
+const liveRepeat = (state, id) => { const r = own(state.repeats, id); return r && !r.deleted ? r : undefined; };
 
 export function spaceTool(state, name, args, today, newId, agent = '') {
   if (name === 'tarefas_dia') {
@@ -109,32 +196,93 @@ export function spaceTool(state, name, args, today, newId, agent = '') {
     }, ops: []};
   }
   if (name === 'tarefa_criar') {
-    const text = typeof args.texto === 'string' ? args.texto.trim().replace(/\s+/g, ' ') : '';
-    if (!text || text.length > 500) throw Error('texto deve ter de 1 a 500 caracteres');
+    const text = cleanText(args.texto);
     const date = resolveDate(args.quando, today);
-    const sections = sortedSections(state);
-    if (!sections.length) throw Error('não há seções no Notas');
-    let section = sections[0];
-    if (args.secao !== undefined && args.secao !== '') {
-      section = sections.find(s => itemKey(s.name) === itemKey(args.secao));
-      if (!section) throw Error(`a seção "${args.secao}" não existe; as seções são: ${sectionNames(state).join(', ')}`);
-    }
-    const time = args.horario === undefined || args.horario === '' ? '' : String(args.horario);
-    if (time && !TIME.test(time)) throw Error('horario deve ser HH:MM');
-    // As in the app's form: a task in the backlog has no day, so no time either.
+    const section = findSection(state, args.secao);
+    const time = checkTime(args.horario, 'horario'), fim = checkTime(args.fim, 'fim');
+    // As in the app's form: a task in the backlog has no day, so no time, meeting or repeat either.
     if (time && !date) throw Error('tarefa no backlog não tem horário; tire o horario ou escolha um dia em quando');
+    if (!date && (args.reuniao === true || args.repetir !== undefined)) throw Error('reunião e repetição precisam de um dia em quando, não backlog');
+    if (args.reuniao !== undefined && typeof args.reuniao !== 'boolean') throw Error('reuniao deve ser true ou false');
+    const end = endFor(time, fim), meeting = args.reuniao === true;
+    const rule = args.repetir === undefined || args.repetir === null ? null : repeatRule(args.repetir, date);
+    if (rule && date < today) throw Error('a repetição começa hoje ou depois; escolha outro dia em quando');
     let id;
     if (args.chave !== undefined) {
       if (typeof args.chave !== 'string' || !args.chave.trim() || args.chave.length > 200) throw Error('chave deve ter de 1 a 200 caracteres');
       id = keyedId(agent, args.chave);
-      const before = own(state.tasks, id);
+      const before = own(rule ? state.repeats : state.tasks, id);
       if (before) {
         if (before.text !== text) throw Error(`a chave "${args.chave}" já criou outra tarefa ("${before.text}"); use uma chave nova para cada tarefa`);
-        return {result: {...createdOut(state, {...before, id}), repetida: true, ...(before.deleted ? {apagada: true} : {})}, ops: []};
+        const out = rule ? createdRepeat(state, id, before, date) : createdOut(state, {...before, id});
+        return {result: {...out, repetida: true, ...(before.deleted ? {apagada: true} : {})}, ops: []};
       }
     } else id = newId();
-    const patch = {text, section: section.id, time, end: time ? meetingEnd({time}) : '', meeting: false, repeat: '', date, done: false};
+    const fields = {text, section: section.id, time, end, meeting};
+    if (rule) {
+      // The repeat creates each day's task; the first one is written now when it falls on that day.
+      const template = {...fields, ...rule};
+      const ops = [{collection: 'repeats', id, patch: template}];
+      if (repeatsOn(template, date)) ops.push({collection: 'tasks', id: occurrenceId(id, date), patch: {...fields, repeat: id, date, done: false}});
+      return {result: createdRepeat(state, id, template, date), ops};
+    }
+    const patch = {...fields, repeat: '', date, done: false};
     return {result: createdOut(state, {...patch, id}), ops: [{collection: 'tasks', id, patch}]};
+  }
+  if (name === 'tarefa_editar') {
+    const {task, shown} = findTask(state, args.id);
+    const {id, ...stored} = task;
+    const date = task.date;
+    const text = args.texto === undefined ? task.text : cleanText(args.texto);
+    const section = args.secao === undefined ? task.section : findSection(state, args.secao).id;
+    if (args.reuniao !== undefined && typeof args.reuniao !== 'boolean') throw Error('reuniao deve ser true ou false');
+    const meeting = args.reuniao === undefined ? !!task.meeting : args.reuniao;
+    const time = args.horario === undefined ? task.time || '' : checkTime(args.horario, 'horario');
+    let fim = args.fim === undefined ? '' : checkTime(args.fim, 'fim');
+    // A new start keeps the length the meeting had, as in the app's form.
+    if (!fim && args.horario !== undefined && time && task.time && task.end > task.time)
+      fim = fromMinutes(Math.min(toMinutes(time) + toMinutes(task.end) - toMinutes(task.time), 23 * 60 + 59));
+    else if (!fim && args.horario === undefined && time) fim = task.end && task.end > time ? task.end : '';
+    const end = endFor(time, fim);
+    const stop = args.repetir && typeof args.repetir === 'object' && itemKey(args.repetir.regra || '') === 'nao';
+    if (!date && (time || meeting || (args.repetir !== undefined && !stop))) throw Error('tarefa no backlog não tem horário, reunião nem repetição; mova para um dia com tarefa_mover antes');
+    const fields = {text, section, time, end, meeting};
+    const current = task.repeat ? liveRepeat(state, task.repeat) : undefined;
+    const ops = [];
+    let outId = id, repeat = current ? {...current, id: task.repeat} : null, taskPatch = {...fields};
+    if (stop) {
+      if (current) ops.push({collection: 'repeats', id: task.repeat, patch: {deleted: true}});
+      taskPatch.repeat = '';
+      repeat = null;
+    } else if (args.repetir !== undefined && args.repetir !== null) {
+      const rule = repeatRule(args.repetir, date);
+      if (!current && date < today) throw Error('tarefa de um dia passado não começa a se repetir; mova para hoje ou depois com tarefa_mover');
+      const rid = current ? task.repeat : newId();
+      // A rule changed on a series keeps where it started, unless every other week needs a new anchor.
+      const start = current && rule.weeks === 1 ? current.start || '' : rule.start;
+      repeat = {...fields, ...rule, start, id: rid};
+      ops.push({collection: 'repeats', id: rid, patch: {...fields, ...rule, start}});
+      taskPatch.repeat = rid;
+      // A day not opened yet shows the repeat's occurrence by its own id: the task becomes that
+      // occurrence (with its steps), or else the day would show it twice.
+      if (!current && !state.days?.[date]) {
+        const occ = occurrenceId(rid, date);
+        if (repeatsOn(repeat, date)) {
+          ops.push({collection: 'tasks', id, patch: {deleted: true}});
+          ops.push({collection: 'tasks', id: occ, patch: {...fields, repeat: rid, date, done: !!task.done}});
+          if (origin(task) === id) for (const st of taskSteps(state, task)) ops.push({collection: 'steps', id: st.id, patch: {task: occ}});
+          outId = occ;
+          taskPatch = null;
+        } else taskPatch.repeat = '';
+      }
+    } else if (current) {
+      // Editing an occurrence edits the repeat too, as in the app.
+      ops.push({collection: 'repeats', id: task.repeat, patch: fields});
+      repeat = {...repeat, ...fields};
+    }
+    if (taskPatch) ops.push({collection: 'tasks', id, patch: shown ? {...stored, ...taskPatch} : taskPatch});
+    const out = {...createdOut(state, {...fields, id: outId, date}), ...(repeat ? {repete: ruleLabel(repeat)} : {})};
+    return {result: out, ops};
   }
   if (name === 'tarefa_concluir') {
     const {task, shown} = findTask(state, args.id);
