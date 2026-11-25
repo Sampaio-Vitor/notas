@@ -1027,11 +1027,9 @@ function render() {
     $('.n-page-action', sub.el).innerHTML = page.action;
     sub.el.dataset.action = page.action ? 'yes' : 'no';
   }
-  drawMeetingPop();
 }
 
 function switchTab(id) {
-  closeMeetingPop();
   // The Hoje tab always comes back to today.
   if (id === 'hoje') hojeDate = railDate = null;
   // The Casa tab (or its sidebar entry) always opens on the overview.
@@ -1048,7 +1046,6 @@ function switchTab(id) {
 // ---------- Sheets ----------
 
 function openSheet(html, ready) {
-  closeMeetingPop();
   $('#sheet-content').innerHTML = html;
   const dialog = $('#sheet');
   if (!dialog.open) dialog.showModal();
@@ -1149,6 +1146,7 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
   const dayOptions = Array.from({length: 31}, (_, i) => `<option value="${i + 1}" ${(repeat?.monthDay || Number(today().slice(8, 10))) === i + 1 ? 'selected' : ''}>${i + 1}</option>`).join('');
   openSheet(`<form class="n-form" id="task-form">${sheetTop(title)}
     <textarea name="text" rows="1" required maxlength="10000" placeholder="Tarefa" aria-label="Tarefa" ${task || editingRepeat ? '' : 'autofocus'}>${esc(source?.text || '')}</textarea>
+    ${task && !editingRepeat ? `<div class="n-opts"><label class="n-opt">Concluída<input type="checkbox" class="n-switch" name="done" ${task.done ? 'checked' : ''}></label></div>` : ''}
     ${editingRepeat ? '' : `<fieldset class="n-fieldset"><legend>Passos</legend><div class="n-opts n-passos-edit" data-passos-edit>${stepList.map(st => passoField(st.id, st.text)).join('')}<label class="n-opt n-passo-new">${ICONS.plus}<input data-new-passo placeholder="Adicionar passo" autocomplete="off" autocapitalize="sentences" enterkeyhint="enter" maxlength="500" aria-label="Adicionar passo"></label></div></fieldset>`}
     <fieldset class="n-fieldset"><legend>Seção</legend><div class="n-chips">${sections().map(s => `<label class="n-chip"><input type="radio" name="section" value="${s.id}" ${s.id === section ? 'checked' : ''}><span>${esc(s.name)}</span></label>`).join('')}</div></fieldset>
     ${editingRepeat ? '' : `<fieldset class="n-seg"><legend class="n-sr">Quando</legend>${[...(pastDay ? [['day', cap(dayShort(pastDay).replace(/ de \S+$/, ''))]] : []), ['today', 'Hoje'], ['later', 'Outro dia'], ['backlog', 'Backlog']].filter(([v]) => v !== 'backlog' || tabPrefs(state).backlog || isBacklog).map(([v, l]) => `<label><input type="radio" name="when" value="${v}" ${v === initialWhen ? 'checked' : ''}><span>${l}</span></label>`).join('')}</fieldset>`}
@@ -1300,8 +1298,11 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       } else if (!editingRepeat) {
         if (task) {
           const date = later || (onDay ? pastDay : onToday ? today() : '');
-          // Brought from a past day, it starts over as not done.
-          ops.push({collection: 'tasks', id: task.id, patch: {text: value, section: sectionId, time, end, meeting, repeat: rid, date, ...(leavingPast ? {done: false} : {})}});
+          // Brought from a past day, it starts over as not done, unless marked done here.
+          const done = form.elements.done.checked, doneChanged = done !== !!task.done;
+          if (doneChanged) settle(task.id);
+          ops.push({collection: 'tasks', id: task.id, patch: {text: value, section: sectionId, time, end, meeting, repeat: rid, date, ...(doneChanged ? {done} : leavingPast ? {done: false} : {})}});
+          if (doneChanged && done) ops.push(...taskDoneOps(state, task, true).slice(1));
           owner = origin(task);
         } else if (later) {
           owner = uid();
@@ -1915,12 +1916,6 @@ document.addEventListener('click', e => {
   else if (d.step) toggleStep(d.stepTask, d.step);
   else if (d.steps) showSteps(d.steps);
   else if (d.toggleOcc) toggleOccurrence(d.toggleOcc, d.date);
-  else if (d.meetingPop) openMeetingPop({id: d.meetingPop, date: d.date}, b.closest('.d-ev, .d-evt, .d-evt-chip') || b);
-  else if (d.meetingOcc) openMeetingPop({repeatId: d.meetingOcc, date: d.date}, b.closest('.d-ev, .d-evt, .d-evt-chip') || b);
-  else if ('popClose' in d) closeMeetingPop();
-  else if ('popToggle' in d) toggleMeetingPop();
-  else if ('popEdit' in d) editMeetingPop();
-  else if ('popDelete' in d) deleteMeetingPop();
   else if (d.toggle && d.collection === 'tasks' && projected(d.toggle)) { const {id, ...fields} = projected(d.toggle); commit('tasks', id, {...fields, done: true}); }
   else if (d.toggle) { const c = d.collection; c === 'tasks' ? toggleTask(d.toggle) : c === 'shopping' ? toggleCart(d.toggle) : c === 'chores' ? toggleChore(d.toggle) : commit(c, d.toggle, {done: !state[c][d.toggle].done}); }
   else if (d.casaOpen) openCasa(d.casaOpen);
@@ -2309,7 +2304,10 @@ const KEY = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? 
 // Week shown in Agenda (its Monday; null follows today), keyboard cursor, range anchor.
 // The private week paints every meeting as the same dark block, with no text and no
 // current-time line, so a screenshot shows only when you are busy.
-let weekStart = null, privateWeek = false, cursor = null, anchor = null, finder = null, dragIds = null, meetingPop = null;
+let weekStart = null, privateWeek = false, cursor = null, anchor = null, finder = null, dragIds = null;
+
+// A meeting on the agenda: its task row, or a repeat's day not created yet (for the right-click menu).
+const rowAttr = (m, date) => m.repeats ? `data-occ-row="${esc(m.id)}" data-occ-date="${date}"` : `data-row="${m.id}"`;
 
 // Sections have no color of their own; the order in Ajustes picks one.
 const SECTION_COLORS = ['#64d2ff', '#bf5af2', '#ff9f0a', '#30d158', '#ff375f', '#5e5ce6', '#ffd60a', '#ac8e68'];
@@ -2378,10 +2376,9 @@ function hojeRail() {
       const line = isToday && !marked && start !== null && start > now ? (marked = true, `<div class="d-now"><b>${clock(now)}</b><hr></div>`) : '';
       const gone = past || (isToday && start !== null && minutes(meetingEnd(t)) <= now);
       const timeHtml = t.time ? (t.meeting || t.end ? `${esc(shortTime(t.time))}<br>${esc(shortTime(meetingEnd(t)))}` : esc(shortTime(t.time))) : '·';
-      const openAttr = t.repeats ? `data-meeting-occ="${t.id}" data-date="${date}"` : `data-meeting-pop="${t.id}" data-date="${date}"`;
+      const openAttr = t.repeats ? `data-edit-occurrence="${t.id}" data-date="${date}"` : `data-edit-task="${t.id}"`;
       const toggleAttr = t.repeats ? `data-toggle-occ="${t.id}" data-date="${date}"` : `data-toggle="${t.id}" data-collection="tasks"`;
-      const popOn = isMeetingPopTarget(t, date) ? 'is-pop-open' : '';
-      return `${line}<div class="d-ev ${t.done ? 'is-done' : ''} ${gone && !t.done ? 'is-past' : ''} ${t.done && settling.has(t.id) ? 'is-settling' : ''} ${popOn}" ${t.repeats ? '' : `data-row="${t.id}"`}><b class="d-ev-time">${timeHtml}</b><button class="d-ev-body" ${openAttr} style="--c:${sectionColor(t.section)}"><span class="d-ev-name">${esc(t.text)}</span><small class="${!t.done && soon ? 'n-accent' : ''}">${!t.done && soon ? `em ${start - now} min` : esc(sectionName(t.section))}</small></button><button class="n-check d-ev-check" ${toggleAttr} aria-pressed="${!!t.done}" aria-label="${t.done ? 'Desmarcar' : 'Concluir'} ${esc(t.text)}" title="${t.done ? 'Desmarcar' : 'Marcar como concluída'}">${ICONS.check}</button></div>`;
+      return `${line}<div class="d-ev ${t.done ? 'is-done' : ''} ${gone && !t.done ? 'is-past' : ''} ${t.done && settling.has(t.id) ? 'is-settling' : ''}" ${rowAttr(t, date)}><b class="d-ev-time">${timeHtml}</b><button class="d-ev-body" ${openAttr} style="--c:${sectionColor(t.section)}"><span class="d-ev-name">${esc(t.text)}</span><small class="${!t.done && soon ? 'n-accent' : ''}">${!t.done && soon ? `em ${start - now} min` : esc(sectionName(t.section))}</small></button><button class="n-check d-ev-check" ${toggleAttr} aria-pressed="${!!t.done}" aria-label="${t.done ? 'Desmarcar' : 'Concluir'} ${esc(t.text)}" title="${t.done ? 'Desmarcar' : 'Marcar como concluída'}">${ICONS.check}</button></div>`;
     }).join('');
     const title = isToday ? 'Agenda de hoje' : `Agenda · ${dayTitle(date)}`;
     const count = meetings.length ? `<span class="d-card-count">${doneCount(meetings)}/${meetings.length}</span>` : '';
@@ -2430,14 +2427,13 @@ function deskReunioes() {
       const open = m.repeats ? `data-edit-occurrence="${m.id}" data-date="${date}"` : `data-edit-task="${m.id}" data-row="${m.id}"`;
       return `<button class="d-evt is-private" ${open} aria-label="Ocupado, ${timeLabel(m)}" style="${box}"></button>`;
     }
-    const open = m.repeats ? `data-meeting-occ="${m.id}" data-date="${date}"` : `data-meeting-pop="${m.id}" data-date="${date}"`;
+    const open = m.repeats ? `data-edit-occurrence="${m.id}" data-date="${date}"` : `data-edit-task="${m.id}"`;
     const toggle = m.repeats ? `data-toggle-occ="${m.id}" data-date="${date}"` : `data-toggle="${m.id}" data-collection="tasks"`;
-    const popOn = isMeetingPopTarget(m, date) ? 'is-pop-open' : '';
-    return `<div class="d-evt ${gone && !m.done ? 'is-past' : ''} ${m.done ? 'is-done' : ''} ${m.done && settling.has(m.id) ? 'is-settling' : ''} ${heightPx < 34 ? 'is-short' : ''} ${popOn}" ${m.repeats ? '' : `data-row="${m.id}"`} style="--c:${sectionColor(m.section)};${box}" title="${esc(m.text)}, ${timeLabel(m)} · ${esc(sectionName(m.section))}${m.repeats ? ` · ${esc(repeatLabel(m))}` : ''}"><button class="d-evt-hit" ${open}><b>${esc(m.text)}</b><span>${timeLabel(m)}</span></button><button class="d-evt-check" ${toggle} aria-pressed="${!!m.done}" aria-label="${m.done ? 'Desmarcar' : 'Concluir'} ${esc(m.text)}" title="${m.done ? 'Desmarcar' : 'Marcar como concluída'}">${ICONS.check}</button></div>`;
+    return `<div class="d-evt ${gone && !m.done ? 'is-past' : ''} ${m.done ? 'is-done' : ''} ${m.done && settling.has(m.id) ? 'is-settling' : ''} ${heightPx < 34 ? 'is-short' : ''}" ${rowAttr(m, date)} style="--c:${sectionColor(m.section)};${box}" title="${esc(m.text)}, ${timeLabel(m)} · ${esc(sectionName(m.section))}${m.repeats ? ` · ${esc(repeatLabel(m))}` : ''}"><button class="d-evt-hit" ${open}><b>${esc(m.text)}</b><span>${timeLabel(m)}</span></button><button class="d-evt-check" ${toggle} aria-pressed="${!!m.done}" aria-label="${m.done ? 'Desmarcar' : 'Concluir'} ${esc(m.text)}" title="${m.done ? 'Desmarcar' : 'Marcar como concluída'}">${ICONS.check}</button></div>`;
   };
   const head = `<div class="d-wk-h" style="${cols}"><span></span>${days.map(d => `<div class="d-wk-day ${d.date === today() ? 'is-today' : ''}"><small>${WEEK[weekday(d.date)].slice(0, 3)}</small><b>${Number(d.date.slice(8, 10))}</b></div>`).join('')}</div>`;
   const untimed = !privateWeek && days.some(d => d.list.some(m => !m.time))
-    ? `<div class="d-wk-all" style="${cols}"><span>Sem horário</span>${days.map(d => `<div>${d.list.filter(m => !m.time).map(m => `<div class="d-chip d-evt-chip ${m.done ? 'is-done' : ''} ${isMeetingPopTarget(m, d.date) ? 'is-pop-open' : ''}" ${m.repeats ? '' : `data-row="${m.id}"`} style="--c:${sectionColor(m.section)}"><button class="d-evt-chip-hit" ${m.repeats ? `data-meeting-occ="${m.id}" data-date="${d.date}"` : `data-meeting-pop="${m.id}" data-date="${d.date}"`}>${esc(m.text)}</button><button class="d-evt-check" ${m.repeats ? `data-toggle-occ="${m.id}" data-date="${d.date}"` : `data-toggle="${m.id}" data-collection="tasks"`} aria-pressed="${!!m.done}" aria-label="${m.done ? 'Desmarcar' : 'Concluir'} ${esc(m.text)}" title="${m.done ? 'Desmarcar' : 'Marcar como concluída'}">${ICONS.check}</button></div>`).join('')}</div>`).join('')}</div>` : '';
+    ? `<div class="d-wk-all" style="${cols}"><span>Sem horário</span>${days.map(d => `<div>${d.list.filter(m => !m.time).map(m => `<div class="d-chip d-evt-chip ${m.done ? 'is-done' : ''}" ${rowAttr(m, d.date)} style="--c:${sectionColor(m.section)}"><button class="d-evt-chip-hit" ${m.repeats ? `data-edit-occurrence="${m.id}" data-date="${d.date}"` : `data-edit-task="${m.id}"`}>${esc(m.text)}</button><button class="d-evt-check" ${m.repeats ? `data-toggle-occ="${m.id}" data-date="${d.date}"` : `data-toggle="${m.id}" data-collection="tasks"`} aria-pressed="${!!m.done}" aria-label="${m.done ? 'Desmarcar' : 'Concluir'} ${esc(m.text)}" title="${m.done ? 'Desmarcar' : 'Marcar como concluída'}">${ICONS.check}</button></div>`).join('')}</div>`).join('')}</div>` : '';
   const hours = [];
   for (let m = first + 60; m < last; m += 60) hours.push(`<span style="top:${y(m)}px">${clock(m)}</span>`);
   const nowLine = !privateWeek && days.some(d => d.date === today()) && now >= first && now <= last;
@@ -2554,7 +2550,7 @@ function finderItems(q) {
   return [...go, ...actions, ...tasks, ...repeats, ...bills, ...shop, ...casa].filter(x => itemKey(`${x.text} ${x.sub || ''} ${x.group}`).includes(key)).slice(0, 40);
 }
 function openFinder(q = '') {
-  closeMenu(); closeMeetingPop();
+  closeMenu();
   finder = {q, i: 0, items: []};
   const el = $('#finder');
   el.innerHTML = `<div class="d-finder-box" role="dialog" aria-modal="true" aria-label="Buscar"><label class="d-finder-in">${ICONS.search}<input id="finder-q" value="${esc(q)}" placeholder="Buscar tarefas, reuniões, contas e comandos" autocomplete="off" role="combobox" aria-expanded="true" aria-controls="finder-list"><kbd>esc</kbd></label><div class="d-finder-list" id="finder-list" role="listbox"></div><p class="d-finder-foot">↑↓ para escolher · Return para abrir</p></div>`;
@@ -2602,6 +2598,13 @@ function taskMenu(id) {
     menuItem('Excluir', `data-ctx="delete" data-id="${id}"`, '⌫', 'is-danger'),
   ].join('');
 }
+// A repeat's day not created yet (another day of the week): done, edit or delete just that day.
+function occurrenceMenu(repeatId, date) {
+  const r = state.repeats[repeatId];
+  if (!r || r.deleted || !date) return '';
+  const a = `data-id="${esc(repeatId)}" data-date="${esc(date)}"`;
+  return [menuItem('Concluir', `data-ctx="occ-done" ${a}`), menuItem('Editar…', `data-ctx="occ-edit" ${a}`), '<hr>', menuItem('Excluir só este dia', `data-ctx="occ-delete" ${a}`, '', 'is-danger')].join('');
+}
 function billMenu(id) {
   const b = state.bills[id];
   if (!b || b.deleted || b.skipped) return '';
@@ -2613,7 +2616,6 @@ function itemMenu(id) {
   return [menuItem(i.done ? 'Tirar do carrinho' : 'Pôr no carrinho', `data-ctx="item-done" data-id="${esc(id)}"`), menuItem('Editar…', `data-ctx="item-edit" data-id="${esc(id)}"`), '<hr>', menuItem('Remover da lista', `data-ctx="item-remove" data-id="${esc(id)}"`, '', 'is-danger')].join('');
 }
 function openMenu(x, y, html) {
-  closeMeetingPop();
   const el = $('#ctx');
   el.innerHTML = html; el.hidden = false;
   el.style.left = `${Math.max(8, Math.min(x, innerWidth - el.offsetWidth - 8))}px`;
@@ -2635,6 +2637,9 @@ function menuAction(d) {
   else if (d.ctx === 'backlog') { commit('tasks', id, {date: '', done: false}); toast('Tarefa movida para o Backlog.'); }
   else if (d.ctx === 'section') commit('tasks', id, {section: d.section});
   else if (d.ctx === 'delete') deleteTasks([id]);
+  else if (d.ctx === 'occ-done') toggleOccurrence(id, d.date);
+  else if (d.ctx === 'occ-edit') editOccurrence(id, d.date);
+  else if (d.ctx === 'occ-delete') deleteOccurrence(id, d.date);
   else if (d.ctx === 'pay') commit('bills', id, {done: !state.bills[id].done});
   else if (d.ctx === 'bill-edit') billSheet(id);
   else if (d.ctx === 'bill-delete') deleteBillSheet(state.bills[id]);
@@ -2644,108 +2649,17 @@ function menuAction(d) {
 }
 document.addEventListener('contextmenu', e => {
   if (!desktop()) return;
-  const task = e.target.closest('[data-row]'), bill = e.target.closest('[data-bill-row]'), item = e.target.closest('[data-item-row]');
-  const html = task ? taskMenu(task.dataset.row) : bill ? billMenu(bill.dataset.billRow) : item ? itemMenu(item.dataset.itemRow) : '';
+  const task = e.target.closest('[data-row]'), occ = e.target.closest('[data-occ-row]'), bill = e.target.closest('[data-bill-row]'), item = e.target.closest('[data-item-row]');
+  const html = task ? taskMenu(task.dataset.row) : occ ? occurrenceMenu(occ.dataset.occRow, occ.dataset.occDate) : bill ? billMenu(bill.dataset.billRow) : item ? itemMenu(item.dataset.itemRow) : '';
   if (!html) return;
   e.preventDefault();
   if (task && task.matches('.n-row')) { cursor = task.dataset.row; $$('.n-row.is-cursor').forEach(r => r.classList.remove('is-cursor')); task.classList.add('is-cursor'); }
   openMenu(e.clientX, e.clientY, html);
 });
-document.addEventListener('pointerdown', e => {
-  if (!e.target.closest('#ctx')) closeMenu();
-  if (meetingPop && !e.target.closest('#meeting-pop, [data-meeting-pop], [data-meeting-occ]')) closeMeetingPop();
-}, true);
-addEventListener('blur', () => { closeMenu(); closeMeetingPop(); });
-addEventListener('resize', () => { closeMenu(); closeMeetingPop(); });
-document.addEventListener('scroll', () => { closeMenu(); closeMeetingPop(); }, true);
-
-// ----- Popover rápido de reunião (Agenda e Agenda de hoje) -----
-
-function isMeetingPopTarget(m, date) {
-  if (!meetingPop) return false;
-  if (meetingPop.id) return !m.repeats && m.id === meetingPop.id;
-  return !!m.repeats && m.id === meetingPop.repeatId && date === meetingPop.date;
-}
-function resolveMeetingPop() {
-  if (!meetingPop) return null;
-  if (meetingPop.id) {
-    const t = state.tasks[meetingPop.id];
-    return t && !t.deleted ? {item: t, date: t.date || meetingPop.date} : null;
-  }
-  const occId = occurrenceId(meetingPop.repeatId, meetingPop.date);
-  const existing = state.tasks[occId];
-  if (existing && !existing.deleted) {
-    meetingPop.id = occId;
-    meetingPop.repeatId = '';
-    return {item: existing, date: existing.date || meetingPop.date};
-  }
-  const r = state.repeats[meetingPop.repeatId];
-  return r && !r.deleted ? {item: {...r, repeats: true, done: false}, date: meetingPop.date} : null;
-}
-function openMeetingPop({id = '', repeatId = '', date = ''}, anchorEl) {
-  closeMenu();
-  const same = meetingPop && ((id && meetingPop.id === id) || (repeatId && meetingPop.repeatId === repeatId && meetingPop.date === date));
-  if (same) { closeMeetingPop(); return; }
-  const r = anchorEl.getBoundingClientRect();
-  meetingPop = {id, repeatId, date, rect: {top: r.top, right: r.right, bottom: r.bottom, left: r.left}};
-  render();
-  $('#meeting-pop')?.focus({preventScroll: true});
-}
-function closeMeetingPop() {
-  const el = $('#meeting-pop');
-  if (!meetingPop && el?.hidden) return;
-  meetingPop = null;
-  if (el) { el.hidden = true; el.innerHTML = ''; }
-  $$('.is-pop-open').forEach(node => node.classList.remove('is-pop-open'));
-}
-function drawMeetingPop() {
-  const el = $('#meeting-pop');
-  if (!el) return;
-  if (!meetingPop || !desktop() || (tab !== 'hoje' && tab !== 'reunioes')) {
-    if (!el.hidden) { el.hidden = true; el.innerHTML = ''; }
-    meetingPop = null;
-    return;
-  }
-  const resolved = resolveMeetingPop();
-  if (!resolved) { closeMeetingPop(); return; }
-  const {item: m, date} = resolved;
-  const repeat = m.repeats ? m : (m.repeat && state.repeats[m.repeat] && !state.repeats[m.repeat].deleted ? state.repeats[m.repeat] : null);
-  const dayText = date === today() ? 'Hoje' : date ? cap(dayShort(date)) : '';
-  const meta = [dayText, m.time ? timeLabel(m) : '', sectionName(m.section), repeat ? repeatLabel(repeat) : ''].filter(Boolean).join(' · ');
-  el.classList.toggle('is-done', !!m.done);
-  el.style.setProperty('--c', sectionColor(m.section));
-  el.innerHTML = `<div class="d-pop-top"><span class="d-pop-bar" aria-hidden="true"></span><div class="d-pop-info"><div class="d-pop-title">${esc(m.text)}</div><div class="d-pop-meta">${esc(meta)}</div></div><button type="button" class="d-pop-close" data-pop-close aria-label="Fechar">×</button></div>
-    <button type="button" class="d-pop-cta" data-pop-toggle aria-pressed="${!!m.done}">${ICONS.check}<span>${m.done ? 'Concluída · Desmarcar' : 'Marcar como concluída'}</span></button>
-    <div class="d-pop-foot"><button type="button" class="d-pop-act" data-pop-edit>Editar…</button><button type="button" class="d-pop-act is-danger" data-pop-delete>${repeat ? 'Excluir dia' : 'Excluir'}</button></div>`;
-  el.hidden = false;
-  const liveAnchor = $('.is-pop-open');
-  const rect = liveAnchor ? liveAnchor.getBoundingClientRect() : meetingPop.rect;
-  const w = el.offsetWidth, h = el.offsetHeight;
-  const rightX = rect.right + 10, leftX = rect.left - w - 10;
-  const x = rightX + w + 12 <= innerWidth ? rightX : leftX >= 12 ? leftX : Math.max(12, innerWidth - w - 12);
-  const y = Math.max(12, Math.min(rect.top - 8, innerHeight - h - 12));
-  el.style.left = `${Math.round(x)}px`;
-  el.style.top = `${Math.round(y)}px`;
-}
-function toggleMeetingPop() {
-  if (!meetingPop) return;
-  if (meetingPop.id) toggleTask(meetingPop.id);
-  else if (meetingPop.repeatId) toggleOccurrence(meetingPop.repeatId, meetingPop.date);
-}
-function editMeetingPop() {
-  if (!meetingPop) return;
-  const {id, repeatId, date} = meetingPop;
-  closeMeetingPop();
-  if (id) taskSheet({id});
-  else if (repeatId) editOccurrence(repeatId, date);
-}
-function deleteMeetingPop() {
-  if (!meetingPop) return;
-  const {id, repeatId, date} = meetingPop;
-  closeMeetingPop();
-  if (id) deleteTasks([id]);
-  else if (repeatId) deleteOccurrence(repeatId, date);
-}
+document.addEventListener('pointerdown', e => { if (!e.target.closest('#ctx')) closeMenu(); }, true);
+addEventListener('blur', closeMenu);
+addEventListener('resize', closeMenu);
+document.addEventListener('scroll', closeMenu, true);
 
 // ----- Seleção no Backlog, captura rápida, horários livres -----
 
@@ -2862,9 +2776,6 @@ document.addEventListener('keydown', e => {
     }
     return;
   }
-  if (!$('#meeting-pop').hidden) {
-    if (key === 'Escape') { e.preventDefault(); closeMeetingPop(); return; }
-  }
   if ($('#sheet').open) return;
   if (mod && /^[1-9]$/.test(key)) { const target = mainTabs()[Number(key) - 1]; if (target) { e.preventDefault(); switchTab(target[0]); } return; }
   if (mod && key === ',') { e.preventDefault(); switchTab('ajustes'); return; }
@@ -2899,7 +2810,7 @@ document.addEventListener('keydown', e => {
 });
 
 // The time and the "em N min" labels move with the clock.
-setInterval(() => { if (desktop() && (tab === 'hoje' || tab === 'reunioes') && !finder && $('#ctx').hidden && $('#meeting-pop').hidden && !dragIds && !document.activeElement?.closest?.('input')) render(); }, 60000);
+setInterval(() => { if (desktop() && (tab === 'hoje' || tab === 'reunioes') && !finder && $('#ctx').hidden && !dragIds && !document.activeElement?.closest?.('input')) render(); }, 60000);
 
 // ---------- Lifecycle ----------
 
