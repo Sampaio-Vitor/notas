@@ -1090,6 +1090,16 @@ function stepOps(form, owner, before, task) {
   if (task?.done && owner === origin(task) && rows.some(r => !r.id)) ops.push({collection: 'tasks', id: task.id, patch: {done: false}});
   return ops;
 }
+// A repeat's day not created yet (a future day in the week): create that day's task and edit it,
+// so it can be changed or deleted alone.
+function editOccurrence(repeatId, date) {
+  const id = occurrenceId(repeatId, date);
+  if (state.tasks[id]) { taskSheet({id}); return; }
+  const t = dayTasks(date).find(t => t.id === id);
+  if (!t) { taskSheet({repeatId}); return; }
+  const {id: _, ...fields} = t;
+  commit('tasks', id, fields).then(() => taskSheet({id}));
+}
 function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, time: presetTime} = {}) {
   const task = id ? state.tasks[id] : null;
   const repeat = state.repeats[repeatId || task?.repeat] && !state.repeats[repeatId || task?.repeat].deleted ? state.repeats[repeatId || task?.repeat] : null;
@@ -1129,7 +1139,7 @@ function taskSheet({id, repeatId, when, meeting: asMeeting, date: presetDate, ti
       <label class="n-opt" data-month-day>Dia do mês<select name="monthDay">${dayOptions}</select></label>
     </div>
     ${pullable ? `<div class="n-pull" data-pull-only><button type="button" class="n-pull-link" data-bl-open>ou trazer do backlog ›</button><div class="n-list n-pick-list" data-bl-chosen hidden></div></div>${pickPane()}` : ''}
-    ${task || editingRepeat ? `<div class="n-sheet-actions">${repeat && !editingRepeat ? '<button type="button" class="n-btn n-gray" data-stop-repeat>Parar de repetir</button>' : ''}${editingRepeat ? '<button type="button" class="n-btn n-gray n-danger" data-stop-repeat>Parar de repetir</button>' : '<button type="button" class="n-btn n-gray n-danger" data-delete>Excluir tarefa</button>'}</div>` : ''}
+    ${task || editingRepeat ? `<div class="n-sheet-actions">${repeat && !editingRepeat ? '<button type="button" class="n-btn n-gray" data-stop-repeat>Parar de repetir</button>' : ''}${editingRepeat ? '<button type="button" class="n-btn n-gray n-danger" data-stop-repeat>Parar de repetir</button>' : `<button type="button" class="n-btn n-gray n-danger" data-delete>${repeat ? 'Excluir só este dia' : isMeeting ? 'Excluir reunião' : 'Excluir tarefa'}</button>`}</div>` : ''}
   </form>`, () => {
     const form = $('#task-form'), text = form.elements.text;
     autosize(text); text.addEventListener('input', () => autosize(text));
@@ -1795,6 +1805,7 @@ document.addEventListener('click', e => {
   else if ('newTask' in d) tab === 'hoje' && hojeDate ? newTaskOn(hojeDate) : taskSheet({when: tab === 'backlog' ? 'backlog' : 'today'});
   else if ('newMeeting' in d) taskSheet({when: 'today', meeting: true});
   else if (d.editRepeat) taskSheet({repeatId: d.editRepeat});
+  else if (d.editOccurrence) editOccurrence(d.editOccurrence, d.date);
   else if (d.editBill) billSheet(d.editBill, !!d.catalog);
   else if (d.billActions) billActionsSheet(d.billActions, !!d.catalog);
   else if (d.billFilter) { billFilter = d.billFilter; render(); }
@@ -2275,13 +2286,13 @@ function deskReunioes() {
   const block = (m, date) => {
     const {start, stop} = m, gone = m.done || date < today() || (date === today() && stop <= now);
     const box = `top:${y(start) + 1}px;height:${Math.max(y(stop) - y(start) - 2, 12)}px;left:calc(${m.lane} * 100% / ${m.lanes} + 3px);width:calc(100% / ${m.lanes} - 6px)`;
-    const open = m.repeats ? `data-edit-repeat="${m.id}"` : `data-edit-task="${m.id}" data-row="${m.id}"`;
+    const open = m.repeats ? `data-edit-occurrence="${m.id}" data-date="${date}"` : `data-edit-task="${m.id}" data-row="${m.id}"`;
     if (privateWeek) return `<button class="d-evt is-private" ${open} aria-label="Ocupado, ${timeLabel(m)}" style="${box}"></button>`;
     return `<button class="d-evt ${gone ? 'is-past' : ''} ${m.done ? 'is-done' : ''}" ${open} style="--c:${sectionColor(m.section)};${box}" title="${esc(m.text)}, ${timeLabel(m)} · ${esc(sectionName(m.section))}${m.repeats ? ` · ${esc(repeatLabel(m))}` : ''}"><b>${esc(m.text)}</b><span>${timeLabel(m)}</span></button>`;
   };
   const head = `<div class="d-wk-h" style="${cols}"><span></span>${days.map(d => `<div class="d-wk-day ${d.date === today() ? 'is-today' : ''}"><small>${WEEK[weekday(d.date)].slice(0, 3)}</small><b>${Number(d.date.slice(8, 10))}</b></div>`).join('')}</div>`;
   const untimed = !privateWeek && days.some(d => d.list.some(m => !m.time))
-    ? `<div class="d-wk-all" style="${cols}"><span>Sem horário</span>${days.map(d => `<div>${d.list.filter(m => !m.time).map(m => `<button class="d-chip d-evt-chip ${m.done ? 'is-done' : ''}" ${m.repeats ? `data-edit-repeat="${m.id}"` : `data-edit-task="${m.id}"`} style="--c:${sectionColor(m.section)}">${esc(m.text)}</button>`).join('')}</div>`).join('')}</div>` : '';
+    ? `<div class="d-wk-all" style="${cols}"><span>Sem horário</span>${days.map(d => `<div>${d.list.filter(m => !m.time).map(m => `<button class="d-chip d-evt-chip ${m.done ? 'is-done' : ''}" ${m.repeats ? `data-edit-occurrence="${m.id}" data-date="${d.date}"` : `data-edit-task="${m.id}"`} style="--c:${sectionColor(m.section)}">${esc(m.text)}</button>`).join('')}</div>`).join('')}</div>` : '';
   const hours = [];
   for (let m = first + 60; m < last; m += 60) hours.push(`<span style="top:${y(m)}px">${clock(m)}</span>`);
   const nowLine = !privateWeek && days.some(d => d.date === today()) && now >= first && now <= last;
