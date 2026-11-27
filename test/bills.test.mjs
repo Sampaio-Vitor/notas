@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {initialState, apply, rollover, live, repeatingBills, scheduledBills, billCatalog, virtualBill, editBillOps, deleteBillOps, undoBillOps, billRule, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, billDueDate, monthBills, own} from '../public/model.js';
+import {initialState, apply, rollover, live, repeatingBills, scheduledBills, billCatalog, virtualBill, editBillOps, deleteBillOps, undoBillOps, billRule, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, billDueDate, monthBills, billPayable, payBillOps, own} from '../public/model.js';
 
 const run = (state, ops) => ops.forEach(op => apply(state, op));
 function fixture() {
@@ -413,4 +413,35 @@ test('own: só registros do próprio estado, nunca do protótipo', () => {
   for (const id of ['constructor', 'toString', 'hasOwnProperty', '__proto__', 'valueOf']) assert.equal(own(tasks, id), undefined, id);
   assert.equal(own(undefined, 'a'), undefined);
   assert.equal(own(tasks, 1), undefined);
+});
+
+test('conta prevista de um mês futuro pode ser paga antes, e a virada do mês a mantém paga', () => {
+  const s = fixture();
+  const jan = virtualBill(s, 'internet-2027-01');
+  assert.equal(billPayable(jan, '2026-10'), true);
+  run(s, payBillOps(s, jan, '2026-10'));
+  assert.equal(s.bills['internet-2027-01'].done, true);
+  assert.equal(s.bills['internet-2027-01'].amount, 11990);
+  assert.equal(virtualBill(s, 'internet-2027-01'), undefined);
+  assert.deepEqual(monthBills(s, '2027-01', '2026-10').projected, []);
+  assert.deepEqual(scheduledBills(s, '2026-11', 3).map(m => m.total), [11990, 11990, 0]);
+  run(s, rollover(s, '2026-11-01'));
+  run(s, rollover(s, '2027-01-01'));
+  const stored = live(s, 'bills').filter(b => b.month === '2027-01');
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].done, true);
+  assert.equal(billRule(s, {id: 'internet'}).amount, 11990);
+});
+
+test('conta por sessão só pode ser paga quando o mês dela chega', () => {
+  const s = initialState();
+  s.months['2026-11'] = {month: '2026-11'};
+  s.bills.trainer = {...trainer};
+  const dec = virtualBill(s, 'trainer-2026-12');
+  assert.ok(dec);
+  assert.equal(billPayable(dec, '2026-11'), false);
+  assert.deepEqual(payBillOps(s, dec, '2026-11'), []);
+  assert.equal(billPayable(dec, '2026-12'), true);
+  assert.equal(billPayable(s.bills.trainer, '2026-11'), true);
+  assert.equal(billPayable({...therapyState().bills.therapy, month: '2026-12'}, '2026-11'), false);
 });

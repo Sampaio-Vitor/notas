@@ -267,8 +267,22 @@ export function scheduledBills(state, from, count = 12) {
   return months;
 }
 
+// Paying ahead: any bill can be marked paid in a month still to come, except one charged per
+// session, whose amount is only known once its sessions are over (it waits for its month).
+export const billPayable = (b, current) => b.calcMode !== 'occurrence' || b.month <= current;
+// Marking a bill paid. A future occurrence the rollover has not created yet is stored first,
+// with the value it is projected at, so the rollover leaves it as it is.
+export function payBillOps(state, bill, current) {
+  if (!billPayable(bill, current)) return [];
+  if (!bill.virtual) return state.bills[bill.id] ? [billOp(bill.id, {done: true})] : [];
+  const ops = editBillOps(state, bill, {text: bill.text, amount: bill.amount, due: bill.due});
+  const last = ops.at(-1);
+  if (last?.id === bill.id) last.patch.done = true;
+  return ops;
+}
+
 // The bills of a month. In a month after `current`, also what the repeating ones will create
-// there (`virtual`): a projection that cannot be paid yet.
+// there (`virtual`): a projection that can already be paid (see billPayable).
 export function monthBills(state, month, current) {
   const real = live(state, 'bills').filter(b => b.month === month);
   if (month <= current) return {real, projected: []};

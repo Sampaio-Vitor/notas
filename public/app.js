@@ -3,7 +3,7 @@ import {createNavigation} from './navigation.js';
 const report = message => { try { navigator.sendBeacon?.('/api/client-log', new Blob([JSON.stringify({message})], {type: 'application/json'})); } catch {} };
 addEventListener('error', e => report(`${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`));
 addEventListener('unhandledrejection', e => report(`promise: ${e.reason?.stack || e.reason}`));
-import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, overdueTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, virtualBill, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, billChain, linkedCard, cardBill, parseQuickTask, meetingLanes, meetingEnd, onAgenda, toMinutes, fromMinutes, tasksForDay, billDueDate, monthBills, liveLists, liveChores, choresForToday, parseChore, nextCycleDate, CYCLES, origin, taskSteps, taskDoneOps, stepToggleOps} from './model.js';
+import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, overdueTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, virtualBill, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billPayable, payBillOps, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, billChain, linkedCard, cardBill, parseQuickTask, meetingLanes, meetingEnd, onAgenda, toMinutes, fromMinutes, tasksForDay, billDueDate, monthBills, liveLists, liveChores, choresForToday, parseChore, nextCycleDate, CYCLES, origin, taskSteps, taskDoneOps, stepToggleOps} from './model.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -494,15 +494,15 @@ function viewContas() {
     if (!due && every === 1) return '';
     return `<span class="n-meta ${late ? 'is-late' : ''}">${due}${due && every > 1 ? ' · ' : ''}${every > 1 ? `<i class="n-every">${everyLabel(every)}</i>` : ''}</span>`;
   };
-  const row = b => `<div class="n-row n-bill-row ${b.done ? 'is-done' : ''}"><button class="n-check" data-toggle="${esc(b.id)}" data-collection="bills" aria-pressed="${!!b.done}" aria-label="${b.done ? 'Desmarcar' : 'Marcar como paga'} ${esc(b.text)}">${ICONS.check}</button><button class="n-text n-two" data-edit-bill="${esc(b.id)}"><span>${esc(b.text)}</span>${dueMeta(b)}${b.calcMode === 'occurrence' ? `<span class="n-meta">${billCalcLabel(b)}</span>` : ''}${cardMeta(b)}</button><span class="n-amount">${money(b.amount)}</span>${billActions(b)}</div>`;
+  const row = b => `<div class="n-row n-bill-row ${b.done ? 'is-done' : ''} ${payable(b) ? '' : 'n-plain'}">${payable(b) ? billCheck(b) : ''}<button class="n-text n-two" data-edit-bill="${esc(b.id)}"><span>${esc(b.text)}</span>${dueMeta(b)}${b.calcMode === 'occurrence' ? `<span class="n-meta">${billCalcLabel(b)}</span>` : ''}${cardMeta(b)}</button><span class="n-amount">${money(b.amount)}</span>${billActions(b)}</div>`;
   const top = `<div class="n-top"><button class="n-link" data-month="${prev}">‹ ${monthName(prev)}</button><span class="n-top-end"><button class="n-link" data-month="${next}">${monthName(next)} ›</button><button class="n-icon" data-new-bill aria-label="Adicionar conta">${ICONS.plus}</button></span></div>`;
   if (!bills.length && !projected.length && !accruing.length) return `${statusHtml()}${top}<h1 class="n-title">${monthName(billMonth)}</h1>${billsSegment()}${noBills()}`;
   if (billMonth > current) {
-    const planned = b => `<div class="n-row n-bill-row n-plain"><button class="n-text n-two" data-edit-bill="${esc(b.id)}"><span>${esc(b.text)}</span><span class="n-meta">${plannedMeta(b)}</span></button><span class="n-amount">${money(b.amount)}</span>${billActions(b)}</div>`;
+    const planned = b => `<div class="n-row n-bill-row ${payable(b) ? '' : 'n-plain'}">${payable(b) ? billCheck(b) : ''}<button class="n-text n-two" data-edit-bill="${esc(b.id)}"><span>${esc(b.text)}</span><span class="n-meta">${plannedMeta(b)}</span></button><span class="n-amount">${money(b.amount)}</span>${billActions(b)}</div>`;
     return `${statusHtml()}${top}<h1 class="n-title">${monthName(billMonth)}</h1>${billsSegment()}
     <div class="n-total"><span>Previsto</span><strong>${money(left + projected.reduce((n, b) => n + b.amount, 0))}</strong></div>
     ${unpaid.length ? `<div class="n-group-h"><h2>A pagar</h2></div><div class="n-list">${unpaid.map(row).join('')}</div>` : ''}
-    ${projected.length ? `<div class="n-group-h"><h2>Previstas</h2></div><div class="n-list">${projected.map(planned).join('')}</div><p class="n-note">Contas que se repetem entram aqui quando ${MONTHS[Number(billMonth.slice(5, 7)) - 1]} chegar. Toque numa para ajustar ou excluir.</p>` : ''}
+    ${projected.length ? `<div class="n-group-h"><h2>Previstas</h2></div><div class="n-list">${projected.map(planned).join('')}</div><p class="n-note">Contas que se repetem entram aqui quando ${MONTHS[Number(billMonth.slice(5, 7)) - 1]} chegar. Já dá para marcar como paga${[...unpaid, ...projected].some(b => !payable(b)) ? ', menos as cobradas por sessão' : ''}. Toque numa para ajustar ou excluir.</p>` : ''}
     ${accrual}
     ${paid.length ? `<div class="n-group-h"><h2>Pagas</h2></div><div class="n-list">${paid.map(row).join('')}</div>` : ''}`;
   }
@@ -514,6 +514,19 @@ function viewContas() {
     ${accrual}
     ${paid.length ? `<div class="n-group-h"><h2>Pagas</h2></div><div class="n-list">${paid.map(row).join('')}</div>` : ''}`;
 }
+
+// Paid or not. A bill still projected in a future month is stored as paid; one charged per
+// session only once its month comes (billPayable).
+function toggleBill(id) {
+  const stored = state.bills[id];
+  if (stored?.done) return commit('bills', id, {done: false});
+  const bill = stored || virtualBill(state, id);
+  if (!bill) return;
+  if (!billPayable(bill, today().slice(0, 7))) return toast(`${bill.text} é cobrada por sessão: dá para pagar quando ${monthOf(bill.month)} chegar.`);
+  commitMany(payBillOps(state, bill, today().slice(0, 7)));
+}
+const payable = b => b.done || billPayable(b, today().slice(0, 7));
+const billCheck = b => `<button class="n-check" data-toggle="${esc(b.id)}" data-collection="bills" aria-pressed="${!!b.done}" aria-label="${b.done ? 'Desmarcar' : 'Marcar como paga'} ${esc(b.text)}">${ICONS.check}</button>`;
 
 // Into the cart = bought now (the server keeps the time and who); out of it again clears that.
 const toggleCart = id => commit('shopping', id, state.shopping[id].done ? {done: false, bought: 0} : {done: true, bought: Date.now()});
@@ -1917,6 +1930,7 @@ document.addEventListener('click', e => {
   else if (d.steps) showSteps(d.steps);
   else if (d.toggleOcc) toggleOccurrence(d.toggleOcc, d.date);
   else if (d.toggle && d.collection === 'tasks' && projected(d.toggle)) { const {id, ...fields} = projected(d.toggle); commit('tasks', id, {...fields, done: true}); }
+  else if (d.toggle && d.collection === 'bills') toggleBill(d.toggle);
   else if (d.toggle) { const c = d.collection; c === 'tasks' ? toggleTask(d.toggle) : c === 'shopping' ? toggleCart(d.toggle) : c === 'chores' ? toggleChore(d.toggle) : commit(c, d.toggle, {done: !state[c][d.toggle].done}); }
   else if (d.casaOpen) openCasa(d.casaOpen);
   else if (d.casaFilter) { casaFilter = d.casaFilter; render(); }
@@ -2481,13 +2495,13 @@ function billTable() {
     ${billMonth === current && accruing.length ? `<div class="d-stat"><span>Acumulando para ${monthOf(addMonths(billMonth, 1))}</span><strong class="n-accent">${money(accruing.reduce((n, b) => n + b.held * b.unitAmount, 0))}</strong><small>${accruing.length === 1 ? `${esc(accruing[0].text)} · ${accruing[0].held} de ${plural(billIncludedDates(accruing[0]).length, 'sessão', 'sessões')}` : plural(accruing.length, 'conta', 'contas')}</small></div>` : billMonth === current ? `<div class="d-stat"><span>Próximo vencimento</span><strong>${next ? esc(next.text) : 'Nenhum'}</strong><small>${next ? `${WEEK[weekday(nextDay)].toLowerCase()}, dia ${next.due} · ${money(next.amount)}` : 'Nada mais a vencer neste mês'}</small></div>` : ''}
   </div>`;
   const row = b => `<tr class="${b.done ? 'is-done' : ''}" data-bill-row="${esc(b.id)}">
-    <td class="d-c-check"><button class="n-check" data-toggle="${esc(b.id)}" data-collection="bills" aria-pressed="${!!b.done}" aria-label="${b.done ? 'Desmarcar' : 'Marcar como paga'} ${esc(b.text)}">${ICONS.check}</button></td>
+    <td class="d-c-check">${payable(b) ? billCheck(b) : ''}</td>
     <td><button class="d-c-name" data-edit-bill="${esc(b.id)}">${esc(b.text)}${b.calcMode === 'occurrence' ? `<small>${billCalcLabel(b)}</small>` : ''}${cardLabel(b) ? `<small>${esc(cardLabel(b))}</small>` : ''}</button></td>
     <td class="${late(b) ? 'is-late' : ''}">${late(b) ? `Venceu dia ${b.due}` : b.due ? `Dia ${b.due}` : 'Sem dia'}${b.done ? ' <small>paga</small>' : ''}</td>
     <td>${b.repeat !== false ? cap(everyLabel(billEvery(b))) : 'Não repete'}</td>
     <td class="d-num">${money(b.amount)}</td>
     <td class="d-c-more">${billActions(b)}</td></tr>`;
-  const plannedRow = b => `<tr class="is-planned"><td class="d-c-check"></td><td><button class="d-c-name" data-edit-bill="${esc(b.id)}">${esc(b.text)}${b.calcMode === 'occurrence' ? `<small>${billCalcLabel(b)}</small>` : ''}${cardLabel(b) ? `<small>${esc(cardLabel(b))}</small>` : ''}</button></td><td>${b.due ? `Dia ${b.due}` : 'Sem dia'}</td><td>${cap(everyLabel(b.every))}</td><td class="d-num">${money(b.amount)}</td><td class="d-c-more">${billActions(b)}</td></tr>`;
+  const plannedRow = b => `<tr class="is-planned"><td class="d-c-check">${payable(b) ? billCheck(b) : ''}</td><td><button class="d-c-name" data-edit-bill="${esc(b.id)}">${esc(b.text)}${b.calcMode === 'occurrence' ? `<small>${billCalcLabel(b)}</small>` : ''}${cardLabel(b) ? `<small>${esc(cardLabel(b))}</small>` : ''}</button></td><td>${b.due ? `Dia ${b.due}` : 'Sem dia'}</td><td>${cap(everyLabel(b.every))}</td><td class="d-num">${money(b.amount)}</td><td class="d-c-more">${billActions(b)}</td></tr>`;
   const accrualRow = b => `<tr class="is-planned"><td class="d-c-check"></td><td><span class="d-c-name">${esc(b.text)}<small>${b.progress}</small></span></td><td>${payWhen(b)}</td><td>${cap(everyLabel(billEvery(b)))}</td><td class="d-num">${money(b.amount)}</td><td></td></tr>`;
   return `${stats}<table class="d-table"><thead><tr><th><span class="n-sr">Paga</span></th><th>Conta</th><th>Vencimento</th><th>Repetição</th><th class="d-num">Valor</th><th><span class="n-sr">Ações</span></th></tr></thead>
     <tbody>${unpaid.map(row).join('')}${projected.length ? `<tr class="d-t-group"><td colspan="6">Previstas · entram quando o mês chegar</td></tr>${projected.map(plannedRow).join('')}` : ''}${accruing.length ? `<tr class="d-t-group"><td colspan="6">Acumulando · paga em ${monthOf(addMonths(billMonth, 1))}</td></tr>${accruing.map(accrualRow).join('')}` : ''}${paid.length ? `<tr class="d-t-group"><td colspan="6">Pagas</td></tr>${paid.map(row).join('')}` : ''}</tbody></table>`;
