@@ -5,7 +5,7 @@ import {resolve, dirname, extname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {randomBytes, randomUUID, createHmac, timingSafeEqual} from 'node:crypto';
 import {generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse} from '@simplewebauthn/server';
-import {initialState, apply, SHARED_COLLECTIONS, rollover, migrate, normalize, itemKey, itemId, listed, billOpsConflict, cardBillOps, own, shiftDay} from './public/model.js';
+import {initialState, apply, SHARED_COLLECTIONS, rollover, migrate, normalize, itemKey, itemId, listed, billOpsConflict, cardBillOps, own, shiftDay, memoPurgeOps, memoTickOnly} from './public/model.js';
 import {SPACE_TOOLS, SPACE_TOOL_NAMES, spaceTool} from './mcp-espaco.mjs';
 import {validate} from './validacao.mjs';
 import webpush from 'web-push';
@@ -218,7 +218,10 @@ function ensureDay() {
     // Bills linked to a card follow it, including the ones the rollover just created.
     const cardOps = cardBillOps(state);
     for (const op of cardOps) apply(state, op);
-    if (!ops.length && !cardOps.length) continue;
+    // Notes that spent their days in Apagadas are deleted for good.
+    const purged = memoPurgeOps(state, Date.now());
+    for (const op of purged) apply(state, op);
+    if (!ops.length && !cardOps.length && !purged.length) continue;
     persist(u.id); notify(u.id);
   }
 }
@@ -307,6 +310,23 @@ function stampCasa(ops, user) {
   }
 }
 
+// Notas (memos): when a note was written and by which agent, and when and by which agent it went
+// to Apagadas, are the server's to say. The times come from the app (it may have been offline)
+// when plausible. `agent` is how the agent is called in the app; a person's change clears it.
+// Ticking a box in the note is not writing it: who wrote it and when stay as they were.
+function stampMemos(ops, space, agent = '') {
+  const memos = spaces.get(space).memos, now = Date.now(), created = new Set();
+  const plausible = t => typeof t === 'number' && t > now - BOUGHT_SLACK && t <= now + 60000;
+  for (const {collection, id, patch} of ops) {
+    if (collection !== 'memos') continue;
+    delete patch.agent; delete patch.trashedAgent;
+    if (!own(memos, id) && !created.has(id)) { created.add(id); if (!plausible(patch.added)) patch.added = now; } else delete patch.added;
+    const ticked = !('title' in patch) && typeof patch.body === 'string' && memoTickOnly(own(memos, id)?.body || '', patch.body);
+    if (('title' in patch || 'body' in patch) && !ticked) { if (!plausible(patch.edited)) patch.edited = now; patch.agent = agent; } else delete patch.edited;
+    if ('trashed' in patch) { if (patch.trashed && !plausible(patch.trashed)) patch.trashed = now; patch.trashedAgent = patch.trashed ? agent : ''; }
+  }
+}
+
 function stampBought(patch, user) {
   delete patch.boughtBy;
   const now = Date.now();
@@ -319,7 +339,7 @@ function stampBought(patch, user) {
 
 // ---------- MCP ----------
 // Agents (a shopping assistant) reach only the shopping list. An agent whose token names a space
-// (MCP_TOKENS="lia:<token>,robo:<token>:ana") also reaches that person's tasks and bills,
+// (MCP_TOKENS="lia:<token>,robo:<token>:ana") also reaches that person's tasks, bills and notes,
 // and only theirs: the space comes from the token, never from an argument.
 // Each token is sent as "Authorization: Bearer <token>". A last field shaped like an id that
 // names nobody is a mistyped space (robo:<token>:vitro), not the end of the token: it stops
@@ -334,7 +354,15 @@ const agents = (process.env.MCP_TOKENS || '').split(',').filter(e => e.trim()).m
   if (!/^[a-z0-9-]+$/.test(id || '') || token.length < 24) throw Error(`MCP_TOKENS inválido em "${id}". Use id:token ou id:token:espaço, com token de 24 caracteres ou mais.`);
   return {id, token, space};
 });
-for (const a of agents.filter(a => a.space)) console.log(`mcp: ${a.id} alcança tarefas e contas de ${a.space}`);
+for (const a of agents.filter(a => a.space)) console.log(`mcp: ${a.id} alcança tarefas, contas e notas de ${a.space}`);
+// How an agent is called in the app, where a note says who wrote it: MCP_AGENT_NAMES="robo:Robô".
+// Without a name, its id with a capital letter.
+const agentNames = new Map((process.env.MCP_AGENT_NAMES || '').split(',').filter(e => e.trim()).map(entry => {
+  const [id, ...rest] = entry.trim().split(':'), name = rest.join(':').trim();
+  if (!agents.some(a => a.id === id) || !name || name.length > 40) console.warn(`MCP_AGENT_NAMES: "${entry.trim()}" ignorado. Use agente:Nome, com um agente de MCP_TOKENS e um nome de até 40 caracteres.`);
+  return [id, name.slice(0, 40)];
+}).filter(([id, name]) => name && agents.some(a => a.id === id)));
+const agentLabel = agent => agentNames.get(agent.id) || capitalized(agent.id);
 const agentFor = req => {
   const token = req.headers.authorization?.match(/^Bearer (\S+)$/)?.[1];
   return token ? agents.find(a => equal(token, a.token)) : undefined;
@@ -357,6 +385,7 @@ const MCP_TOOLS = [
     inputSchema: {type: 'object', properties: {texto: {type: 'string', minLength: 1, maxLength: 200}}, required: ['texto']}, annotations: {readOnlyHint: true}},
 ];
 const MCP_INSTRUCTIONS = 'Lista de compras compartilhada da casa, a mesma do app Notas. Acentos e maiúsculas não importam nos nomes.';
+const SPACE_INSTRUCTIONS = ' Com este token, também as tarefas, as contas e as notas de uma pessoa. Nota é texto livre em Markdown (aba Notas): o que não é tarefa, conta nem item de lista.';
 
 const personName = id => userById(id)?.name || id || '';
 const isoTime = ms => ms ? new Date(ms).toISOString() : null;
@@ -429,11 +458,12 @@ function commitFromAgent(ops, space, who) {
   commit(wire, space, who);
 }
 
-// Tasks and bills of the agent's space, through the same commit as the app (one transaction,
+// Tasks, bills and notes of the agent's space, through the same commit as the app (one transaction,
 // an opId per operation, logged with the agent, and a notice to that person's devices).
 function callSpaceTool(agent, name, args) {
   if (args === null || typeof args !== 'object' || Array.isArray(args)) throw Error('argumentos devem ser um objeto');
   const {result, ops} = spaceTool(spaces.get(agent.space), name, args, today(), randomUUID, agent.id);
+  stampMemos(ops, agent.space, agentLabel(agent));
   commitFromAgent(ops.map(op => ({opId: `mcp-${randomUUID()}`, ...op})), agent.space, {user: agent.space, agent: agent.id});
   return result;
 }
@@ -447,7 +477,7 @@ function mcpResponse(agent, message) {
   if (id === undefined) return null; // notification
   if (method === 'initialize') {
     const asked = params.protocolVersion;
-    return ok({protocolVersion: MCP_VERSIONS.includes(asked) ? asked : MCP_VERSIONS[0], capabilities: {tools: {}}, serverInfo: {name: 'notas', version: '0.1.0'}, instructions: MCP_INSTRUCTIONS});
+    return ok({protocolVersion: MCP_VERSIONS.includes(asked) ? asked : MCP_VERSIONS[0], capabilities: {tools: {}}, serverInfo: {name: 'notas', version: '0.1.0'}, instructions: MCP_INSTRUCTIONS + (agent.space ? SPACE_INSTRUCTIONS : '')});
   }
   if (method === 'ping') return ok({});
   if (method === 'tools/list') return ok({tools: agent.space ? [...MCP_TOOLS, ...SPACE_TOOLS] : MCP_TOOLS});
@@ -464,9 +494,13 @@ function mcpResponse(agent, message) {
   return fail(-32601, `Método desconhecido: ${method}`);
 }
 
+// Room for one note at its limit, escaped as JSON.
+const BODY_MAX = 400000;
 async function body(req) {
+  // Decoded as a stream: a character split between two chunks stays whole.
+  req.setEncoding('utf8');
   let raw = '';
-  for await (const c of req) { raw += c; if (raw.length > 65536) throw Error('Payload muito grande'); }
+  for await (const c of req) { raw += c; if (raw.length > BODY_MAX) throw Error('Payload muito grande'); }
   return JSON.parse(raw || '{}');
 }
 // Besides PUBLIC_ORIGIN, the same hostname on another port (the old tailnet-only
@@ -645,6 +679,7 @@ const server = http.createServer(async (req, res) => {
         // Who added an item is decided here, not by the client.
         for (const op of ops) if (op.collection === 'shopping') { delete op.patch.by; if (op.patch.listed === true) op.patch.by = user.id; stampBought(op.patch, user.id); }
         stampCasa(ops, user.id);
+        stampMemos(ops, user.id);
         commit(ops, space, {user: user.id});
         return json(200, {ok: true});
       }

@@ -3,7 +3,9 @@ import {createNavigation} from './navigation.js';
 const report = message => { try { navigator.sendBeacon?.('/api/client-log', new Blob([JSON.stringify({message})], {type: 'application/json'})); } catch {} };
 addEventListener('error', e => report(`${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`));
 addEventListener('unhandledrejection', e => report(`promise: ${e.reason?.stack || e.reason}`));
-import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, overdueTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, virtualBill, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billPayable, payBillOps, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, billChain, linkedCard, cardBill, parseQuickTask, meetingLanes, meetingEnd, onAgenda, toMinutes, fromMinutes, tasksForDay, billDueDate, monthBills, liveLists, liveChores, choresForToday, parseChore, nextCycleDate, CYCLES, origin, taskSteps, taskDoneOps, stepToggleOps} from './model.js';
+import {initialState, normalize, apply, dayKey, weekday, rollover, live, sortedSections, repeatsOn, occurrenceId, lastPending, pendingOn, carryOps, scheduledTasks, overdueTasks, itemKey, itemId, listed, tabPrefs, billEvery, scheduledBills, repeatingBills, billRule, billCatalog, virtualBill, editBillOps, deleteBillOps, undoBillOps, guardBillOps, billPayable, payBillOps, billDates, billIncludedDates, billSnapshot, billSessionMonth, accruingBills, billChain, linkedCard, cardBill, parseQuickTask, meetingLanes, meetingEnd, onAgenda, toMinutes, fromMinutes, tasksForDay, billDueDate, monthBills, liveLists, liveChores, choresForToday, parseChore, nextCycleDate, CYCLES, origin, taskSteps, taskDoneOps, stepToggleOps, own, liveMemos, trashedMemos, sortMemos, memoUnseen, memoStamp, memoSnippet, memoTitle, memoTasks, toggleMemoTask, searchMemos, memoGone, MEMO_MAX, MEMO_TITLE_MAX, TRASH_DAYS} from './model.js';
+import MarkdownIt from './vendor/markdown-it.js';
+import {createMarkdown} from './markdown.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -55,10 +57,13 @@ const ICONS = {
   reunioes: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 10h17M8 3v4M16 3v4M8 14h3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
   contas: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5.5" width="17" height="13" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 10h17" stroke="currentColor" stroke-width="1.8"/></svg>',
   compras: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 8.5h13l-1 11a1.5 1.5 0 0 1-1.5 1.4H8a1.5 1.5 0 0 1-1.5-1.4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9 8.5V7a3 3 0 0 1 6 0v1.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
+  notas: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5h7.5L19 8v11a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 5.5 19V5A1.5 1.5 0 0 1 7 3.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14.5 3.5V8H19M8.8 12.5h6.4M8.8 16h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  pin: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7.5 3h5l-.7 5 2.7 3h-9l2.7-3zM10 11v6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  spark: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5l1.7 4.3 4.3 1.7-4.3 1.7L8 13.5 6.3 9.2 2 7.5l4.3-1.7z" fill="currentColor"/></svg>',
   ajustes: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h9M18 7h1M5 17h1M10 17h9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="16" cy="7" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="8" cy="17" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
 };
 // The tab id `compras` is kept for saved preferences; the tab is Casa (Compras is one of its lists).
-const TABS = [['hoje', 'Hoje'], ['reunioes', 'Agenda'], ['backlog', 'Backlog'], ['compras', 'Casa'], ['contas', 'Contas'], ['ajustes', 'Ajustes']];
+const TABS = [['hoje', 'Hoje'], ['reunioes', 'Agenda'], ['backlog', 'Backlog'], ['notas', 'Notas'], ['compras', 'Casa'], ['contas', 'Contas'], ['ajustes', 'Ajustes']];
 const tabIcon = id => ICONS[id === 'compras' ? 'casa' : id];
 // Hoje and Ajustes always show; the others follow this person's choices in Ajustes.
 const visibleTabs = () => { const prefs = tabPrefs(state); return TABS.filter(([id]) => !(id in prefs) || prefs[id]); };
@@ -717,7 +722,7 @@ const listColor = id => { const i = casaLists().findIndex(l => l.id === id); ret
 
 function notesGroup() {
   const notes = live(state, 'notes').filter(n => n.title || n.body).sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || (a.added || 0) - (b.added || 0));
-  const rows = notes.map(n => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-note="${esc(n.id)}"><span>${esc(n.title || n.body.split('\n')[0])}</span>${n.body && n.title ? `<span class="n-meta c-note-body">${esc(n.body.replace(/\s*\n\s*/g, ' · '))}</span>` : ''}</button></div>`).join('');
+  const rows = notes.map(n => `<div class="n-row n-plain"><button class="n-text n-two" data-edit-note="${esc(n.id)}"><span>${esc(n.title || n.body.split('\n')[0])}</span>${n.body && n.title ? `<span class="n-meta c-note-body">${esc(memoSnippet(n, 200))}</span>` : ''}</button></div>`).join('');
   return `<section><div class="n-group-h"><h2>Notas fixas</h2><span>${notes.length || ''}</span></div><div class="n-list">${rows}<div class="n-row n-plain"><button class="n-text n-accent" data-new-note>Nova nota</button></div></div></section>`;
 }
 
@@ -846,8 +851,16 @@ function listSheet(id) {
   });
 }
 
-function noteSheet(id) {
+// An existing note opens to be read, with its Markdown rendered like in the Notas tab; Editar
+// brings the form.
+function noteSheet(id, editing = !id) {
   const n = id ? state.notes[id] : null;
+  if (n && !n.deleted && !editing) {
+    openSheet(`<div class="n-form"><div class="n-sheet-top"><button type="button" class="n-link" data-close>Fechar</button><h2 id="sheet-title">Nota fixa</h2><button type="button" class="n-link n-ok" data-note-edit>Editar</button></div>
+      ${n.title ? `<h3 class="m-h">${esc(n.title)}</h3>` : ''}${n.body ? `<div class="n-md" data-md-body="notes:${esc(id)}">${renderMarkdown(n.body)}</div>` : ''}
+      ${n.editedBy && shared() ? `<p class="n-note">${n.editedBy === meId() ? 'Você editou' : `${esc(personName(n.editedBy))} editou`} ${whenAgo(n.edited)}.</p>` : ''}</div>`, () => { $('[data-note-edit]').onclick = () => noteSheet(id, true); });
+    return;
+  }
   openSheet(`<form class="n-form" id="note-form">${sheetTop(n ? 'Nota fixa' : 'Nova nota fixa')}
     <input name="title" maxlength="200" placeholder="Título (ex.: Wi-Fi)" aria-label="Título" value="${esc(n?.title || '')}" ${n ? '' : 'autofocus'}>
     <textarea name="body" rows="4" maxlength="10000" placeholder="Texto" aria-label="Texto">${esc(n?.body || '')}</textarea>
@@ -903,7 +916,7 @@ function casaRail() {
   const news = shared() ? casaNews().slice(0, 8) : [];
   const feed = news.map(e => `<div class="c-ev"><i class="c-who" style="background:${personColor(e.who)}">${esc(person(e.who)?.name[0] || '?')}</i><div>${esc(person(e.who)?.name || '')} ${e.text}<small>${whenAgo(e.at)} · ${esc(e.where)}</small></div></div>`).join('');
   const notes = live(state, 'notes').filter(n => n.title || n.body).sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || (a.added || 0) - (b.added || 0));
-  const noteRows = notes.map(n => `<button class="d-mini" data-edit-note="${esc(n.id)}"><span>${esc(n.title || n.body.split('\n')[0])}${n.title && n.body ? `<small class="c-note-body">${esc(n.body.replace(/\s*\n\s*/g, ' · '))}</small>` : ''}</span></button>`).join('');
+  const noteRows = notes.map(n => `<button class="d-mini" data-edit-note="${esc(n.id)}"><span>${esc(n.title || n.body.split('\n')[0])}${n.title && n.body ? `<small class="c-note-body">${esc(memoSnippet(n, 200))}</small>` : ''}</span></button>`).join('');
   return `<aside class="d-rail" aria-label="Casa">
     ${shared() ? `<section class="d-card"><div class="d-card-h"><h2>Novidades</h2></div>${feed ? `<div class="c-feed">${feed}</div>` : '<p class="d-card-empty">Nada novo nos últimos 7 dias.</p>'}</section>` : ''}
     <section class="d-card"><div class="d-card-h"><h2>Notas fixas</h2><button class="n-link" data-new-note>Nova</button></div>${noteRows || '<p class="d-card-empty">Wi-Fi, tamanhos, senha do portão…</p>'}</section>
@@ -926,6 +939,313 @@ function deskCasa() {
   const end = `<button class="d-tool" data-edit-list="${esc(casaView)}">${ICONS.more}<span>Lista</span></button>${deskAdd('Novo', `data-new-chore="${esc(casaView)}"`)}`;
   return `${toolbar(esc(listName(casaView)), `Casa · ${count ? plural(count, 'pendente', 'pendentes') : 'nada pendente'}`, end)}<div class="d-split"><div class="d-main">${statusHtml()}${html}</div>${casaRail()}</div>`;
 }
+// ---------- Notas (Markdown) ----------
+// Each person's notes (`memos`): a list by last edit, a note rendered from Markdown and an editor
+// of the raw text. Agents write here too (MCP): what one wrote carries its name, and a dot until
+// the note is opened.
+
+const markdown = createMarkdown(MarkdownIt, {check: ICONS.check});
+// The screen is redrawn on every sync and parsing is the costly part: keep the last few.
+const renderedNotes = new Map();
+function renderMarkdown(body) {
+  let html = renderedNotes.get(body);
+  if (html === undefined) {
+    html = markdown.render(body);
+    if (renderedNotes.size >= 8) renderedNotes.delete(renderedNotes.keys().next().value);
+    renderedNotes.set(body, html);
+  }
+  return html;
+}
+
+// Note open (on the computer, the one in the reading column), section filter, search, and
+// whether the computer's list shows Apagadas.
+let memoId = null, memoSection = '', memoSearch = '', memoTrash = false;
+const memos = () => liveMemos(state);
+const memoOf = id => { const m = own(state.memos, id); return m && !m.deleted ? m : null; };
+const memosUnseen = () => memos().filter(memoUnseen).length;
+const trashNow = () => trashedMemos(state, Date.now());
+const memoSectionOf = m => { const s = own(state.sections, m.section); return s && !s.deleted ? s : null; };
+const memoDot = m => { const s = memoSectionOf(m); return s ? `<i class="m-dot" style="background:${sectionColor(s.id)}" title="${esc(s.name)}"></i>` : ''; };
+const agentTag = name => `<span class="m-agent">${ICONS.spark}${esc(name)}</span>`;
+const clockOf = d => `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+const dayMonth = d => `${d.getDate()}/${String(d.getMonth() + 1).padStart(2, '0')}${d.getFullYear() === new Date().getFullYear() ? '' : `/${String(d.getFullYear()).slice(2)}`}`;
+// In a list: "10:42" today, "qua" in the last week, "21/11" before that.
+function memoWhen(ms) {
+  const d = new Date(ms), date = dayKey(d);
+  if (date >= today()) return clockOf(d);
+  return date > addDays(today(), -7) ? WEEK[d.getDay()].slice(0, 3).toLowerCase() : dayMonth(d);
+}
+// In a sentence: "hoje às 10:42", "ontem às 18:05", "em 21 de novembro".
+function memoWhenLong(ms) {
+  const d = new Date(ms), date = dayKey(d);
+  if (date >= today()) return `hoje às ${clockOf(d)}`;
+  if (date === addDays(today(), -1)) return `ontem às ${clockOf(d)}`;
+  return `em ${d.getDate()} de ${MONTHS[d.getMonth()]}${d.getFullYear() === new Date().getFullYear() ? '' : ` de ${d.getFullYear()}`}`;
+}
+function memoMeta(m) {
+  const s = memoSectionOf(m), when = memoWhenLong(memoStamp(m));
+  return `${s ? `${memoDot(m)}<span>${esc(s.name)} ·</span>` : ''}<span>${m.agent ? `${agentTag(m.agent)} escreveu ${when}` : `Editada ${when}`}</span>`;
+}
+const memoProgress = m => { const t = memoTasks(m.body); return t.total ? `${t.done} de ${t.total}` : ''; };
+
+// `line` is where a search matched, shown in place of the start of the note.
+function memoRow(m, line = '') {
+  const parts = [memoWhen(memoStamp(m)), m.agent ? agentTag(m.agent) : '', memoProgress(m), esc(line || memoSnippet(m))].filter(Boolean);
+  const fresh = memoUnseen(m);
+  return `<div class="n-row n-plain m-row ${fresh ? 'is-new' : ''} ${desktop() && m.id === memoId ? 'is-on' : ''}"><button class="n-text n-two" data-open-memo="${esc(m.id)}"><span class="m-row-t">${fresh ? '<span class="n-sr">Nova: </span>' : ''}${esc(memoTitle(m))}</span><span class="m-row-s">${parts.join(' · ')}</span></button>${memoDot(m)}</div>`;
+}
+const memoTile = m => `<button class="m-tile ${memoUnseen(m) ? 'is-new' : ''}" data-open-memo="${esc(m.id)}"><b>${esc(memoTitle(m))}</b><span>${esc(memoSnippet(m, 90))}</span><small>${memoDot(m)}${[memoProgress(m), memoWhen(memoStamp(m))].filter(Boolean).join(' · ')}</small></button>`;
+
+// By when each was last written: today, the last 7 days, then month by month.
+function memoGroups(list) {
+  const week = addDays(today(), -7), groups = [];
+  for (const m of list) {
+    const date = dayKey(new Date(memoStamp(m)));
+    const name = date >= today() ? 'Hoje' : date > week ? 'Últimos 7 dias' : monthName(date.slice(0, 7));
+    if (groups.at(-1)?.name !== name) groups.push({name, items: []});
+    groups.at(-1).items.push(m);
+  }
+  return groups;
+}
+
+function trashRows() {
+  const list = trashNow(), now = Date.now();
+  if (!list.length) return '<p class="d-empty">Nada em Apagadas.</p>';
+  const left = m => plural(Math.max(1, Math.ceil((m.trashed + TRASH_DAYS * 864e5 - now) / 864e5)), 'dia', 'dias');
+  const when = ms => { const d = new Date(ms), date = dayKey(d); return date >= today() ? 'hoje' : date === addDays(today(), -1) ? 'ontem' : dayMonth(d); };
+  return `<div class="n-list n-spaced">${list.map(m => `<div class="n-row n-plain m-row"><span class="n-text n-two"><span class="m-row-t">${esc(memoTitle(m))}</span><span class="m-row-s">${m.trashedAgent ? `${agentTag(m.trashedAgent)} apagou` : 'Você apagou'} ${when(m.trashed)} · ${left(m)}</span></span><button class="n-link m-rec" data-restore-memo="${esc(m.id)}">Recuperar</button></div>`).join('')}</div>
+    <p class="n-note">Recuperar devolve a nota para a lista, com o mesmo texto.</p>
+    <div class="n-sheet-actions"><button class="n-btn n-gray n-danger" data-empty-trash>${list.length === 1 ? 'Apagar esta nota de vez' : `Apagar estas ${list.length} notas de vez`}</button></div>`;
+}
+
+function memoRows() {
+  const wide = desktop();
+  if (wide && memoTrash) return trashRows();
+  const found = searchMemos(sortMemos(memos()).filter(m => !memoSection || m.section === memoSection), memoSearch), searching = !!itemKey(memoSearch);
+  const trash = trashNow().length;
+  const trashLink = trash ? `<div class="n-list n-spaced m-trash-link"><div class="n-row n-plain"><button class="n-text" data-memo-trash>Apagadas</button><span class="n-meta">${trash}</span><span class="n-chev" aria-hidden="true">›</span></div></div>` : '';
+  if (!found.length) return `<p class="d-empty">${searching || memoSection ? 'Nenhuma nota encontrada.' : 'Nenhuma nota.'}</p>${trashLink}`;
+  const rows = items => `<div class="n-list">${items.join('')}</div>`;
+  if (searching) return `<div class="m-found">${rows(found.map(({memo, line}) => memoRow(memo, line)))}</div>${trashLink}`;
+  const list = found.map(f => f.memo), pinned = list.filter(m => m.pinned);
+  const group = (name, html) => `<section><div class="n-group-h"><h2>${name}</h2></div>${html}</section>`;
+  // On the phone the pinned ones are cards, like Casa's lists; the computer's column keeps rows.
+  return `${pinned.length ? group('Fixadas', wide ? rows(pinned.map(m => memoRow(m))) : `<div class="m-tiles">${pinned.map(memoTile).join('')}</div>`) : ''}
+    ${memoGroups(list.filter(m => !m.pinned)).map(g => group(g.name, rows(g.items.map(m => memoRow(m))))).join('')}${trashLink}`;
+}
+
+// Only sections that have notes; the tasks' sections and their colors.
+function memoChips() {
+  const used = new Set(memos().map(m => m.section)), list = sections().filter(s => used.has(s.id));
+  if (!list.some(s => s.id === memoSection)) memoSection = '';
+  if (!list.length) return '';
+  return `<div class="m-chips" role="group" aria-label="Filtrar por seção"><button class="n-chip-filter ${memoSection ? '' : 'is-on'}" data-memo-section="" aria-pressed="${!memoSection}">Todas</button>${list.map(s => `<button class="n-chip-filter ${memoSection === s.id ? 'is-on' : ''}" data-memo-section="${esc(s.id)}" aria-pressed="${memoSection === s.id}"><i class="m-dot" style="background:${sectionColor(s.id)}"></i>${esc(s.name)}</button>`).join('')}</div>`;
+}
+
+function viewNotas() {
+  const all = memos(), fresh = all.filter(memoUnseen).length;
+  if (!all.length && !trashNow().length) return `${statusHtml()}<div class="m-head"><h1 class="n-title">Notas</h1></div><div class="n-empty"><p>Nenhuma nota ainda.</p><p class="n-note">Texto livre em Markdown, para o que não é tarefa, conta nem lista.</p><div class="n-btns"><button class="n-btn n-yellow" data-new-memo>Nova nota</button></div></div>`;
+  return `${statusHtml()}<div class="m-head"><h1 class="n-title">Notas</h1><p class="n-sub"><span>${plural(all.length, 'nota', 'notas')}</span>${fresh ? `<span class="n-accent">${plural(fresh, 'nova', 'novas')}</span>` : ''}</p></div>
+    <input class="n-bill-search m-search" type="search" aria-label="Buscar nas notas" placeholder="Buscar" value="${esc(memoSearch)}" autocomplete="off" data-memo-search>
+    ${memoChips()}<div id="memo-rows">${memoRows()}</div>`;
+}
+
+// A note without a title is called by its first line, which is already in the text. `under` goes between the title and the text.
+const memoArticle = (m, under = '') => `${m.title ? `<h1 class="m-h">${esc(m.title)}</h1>` : ''}${under}${m.body ? `<div class="n-md" data-md-body="memos:${esc(m.id)}">${renderMarkdown(m.body)}</div>` : '<p class="d-empty">Nota sem texto.</p>'}`;
+
+// Opening a note an agent wrote clears its dot. The time is never before the note's own:
+// with this device's clock behind the server's, the note would stay new forever.
+let memoSeenPending = false;
+function markMemoSeen(m) {
+  if (memoSeenPending || !memoUnseen(m) || document.hidden) return;
+  memoSeenPending = true;
+  const id = m.id;
+  setTimeout(() => {
+    memoSeenPending = false;
+    const now = memoOf(id);
+    if (now && memoUnseen(now) && memoId === id && tab === 'notas') commit('memos', id, {seen: Math.max(Date.now(), now.edited || 0)});
+  });
+}
+
+// A note as a page over the Notas tab (phone).
+function pageMemo() {
+  const m = memoOf(memoId), back = `<button class="n-link n-back" data-back>${ICONS.prev}Notas</button>`;
+  if (!m) return {html: `<div class="n-top">${back}</div><div class="n-empty"><p>Esta nota foi apagada.</p></div>`, action: ''};
+  if (m.trashed) return {html: `<div class="n-top">${back}</div><article class="m-note">${memoArticle(m, `<p class="m-meta">${m.trashedAgent ? `${agentTag(m.trashedAgent)} apagou` : 'Você apagou'} esta nota. Ela fica ${TRASH_DAYS} dias em Apagadas.</p>`)}</article>`, action: `<button class="n-btn n-yellow n-wide" data-restore-memo="${esc(m.id)}">Recuperar nota</button>`};
+  markMemoSeen(m);
+  return {html: `${statusHtml()}<div class="n-top">${back}<span class="n-top-end"><button class="n-icon" data-memo-menu="${esc(m.id)}" aria-label="Fixar, seção, copiar e apagar">${ICONS.more}</button><button class="n-link" data-edit-memo="${esc(m.id)}">Editar</button></span></div>
+    <article class="m-note">${memoArticle(m, `<p class="m-meta">${memoMeta(m)}</p>`)}</article>`, action: ''};
+}
+
+function pageTrash() {
+  return {html: `<div class="n-top"><button class="n-link n-back" data-back>${ICONS.prev}Notas</button></div><h1 class="n-title">Apagadas</h1><p class="n-sub">Depois de ${TRASH_DAYS} dias somem de vez.</p>${trashRows()}`, action: ''};
+}
+
+function openMemo(id) {
+  memoId = id; memoTrash = false;
+  if (tab !== 'notas') { tab = 'notas'; selecting = false; selected.clear(); cursor = null; }
+  if (desktop()) {
+    if (navigation.current !== 'root') navigation.back();
+    render();
+    const content = $('.page[data-name="root"] .page-content');
+    if (content) content.scrollTop = 0;
+  } else if (navigation.current === 'root') navigation.push('nota');
+  else render();
+}
+
+function trashMemo(id) {
+  const m = memoOf(id);
+  if (!m || m.trashed) return;
+  // On the computer the next note in the list takes its place in the reading column.
+  const ids = $$('#memo-rows [data-open-memo]').map(b => b.dataset.openMemo), i = ids.indexOf(id);
+  if (desktop() && memoId === id) memoId = ids[i + 1] || ids[i - 1] || null;
+  commit('memos', id, {trashed: Date.now()});
+  if (!desktop() && navigation.current !== 'root') navigation.back();
+  toast('Nota apagada.', () => { commit('memos', id, {trashed: 0}); toast('Nota recuperada.'); });
+}
+function restoreMemo(id) {
+  if (!memoOf(id)?.trashed) return;
+  commit('memos', id, {trashed: 0});
+  toast('Nota recuperada.');
+}
+function emptyTrash() {
+  const list = trashNow();
+  if (!list.length || !confirm(`${list.length === 1 ? 'Apagar esta nota' : `Apagar estas ${list.length} notas`} de vez? Não dá para desfazer.`)) return;
+  commitMany(list.map(m => ({collection: 'memos', id: m.id, patch: memoGone})));
+  memoTrash = false;
+  if (!desktop() && navigation.current !== 'root') navigation.back();
+  toast(list.length === 1 ? 'Nota apagada de vez.' : `${list.length} notas apagadas de vez.`);
+}
+// A box ticked in the rendered note rewrites its line of the Markdown: in a note of this tab
+// (`memos`) or in one of Casa's pinned notes (`notes`), which is read in a sheet that the
+// redraw does not reach.
+function toggleMemoBox(button) {
+  const holder = button.closest('[data-md-body]'), where = holder?.dataset.mdBody || '', cut = where.indexOf(':');
+  const collection = where.slice(0, cut), id = where.slice(cut + 1), record = collection === 'memos' ? memoOf(id) : collection === 'notes' ? own(state.notes, id) : null;
+  if (!record || record.deleted || record.trashed) return;
+  const body = toggleMemoTask(record.body, Number(button.dataset.mdTask));
+  if (body === null) return;
+  commit(collection, id, {body});
+  if (holder.closest('#sheet')) holder.innerHTML = renderMarkdown(body);
+}
+
+function memoMenuSheet(id) {
+  const m = memoOf(id);
+  if (!m || m.trashed) return;
+  openSheet(`<div class="n-form"><div class="n-sheet-top"><span></span><h2 id="sheet-title">${esc(memoTitle(m))}</h2><button type="button" class="n-link n-ok" data-close>OK</button></div>
+    <div class="n-opts"><label class="n-opt">Fixada<input type="checkbox" class="n-switch" data-m-pin ${m.pinned ? 'checked' : ''}></label>
+      <label class="n-opt">Seção<select data-m-section aria-label="Seção"><option value="">Nenhuma</option>${sections().map(s => `<option value="${esc(s.id)}" ${memoSectionOf(m)?.id === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label></div>
+    <div class="n-sheet-actions"><button type="button" class="n-btn n-gray" data-m-copy>Copiar Markdown</button><button type="button" class="n-btn n-gray n-danger" data-m-trash>Apagar nota</button></div></div>`, () => {
+    $('[data-m-pin]').onchange = e => commit('memos', id, {pinned: e.target.checked});
+    $('[data-m-section]').onchange = e => commit('memos', id, {section: e.target.value});
+    $('[data-m-copy]').onclick = async () => {
+      try { await navigator.clipboard.writeText(memoOf(id)?.body || ''); toast('Markdown copiado.'); } catch { toast('Não foi possível copiar.'); }
+      closeSheet();
+    };
+    $('[data-m-trash]').onclick = () => { closeSheet(); trashMemo(id); };
+  });
+}
+
+// The editor's shortcuts: a mark at the start of the selected lines (again takes it off), or
+// around the selection.
+const MD_TOOLS = [['h', 'H', 'Título'], ['b', 'B', 'Negrito'], ['i', 'I', 'Itálico'], ['ul', '•', 'Lista'], ['task', '☐', 'Caixa de marcar'], ['quote', '❝', 'Citação'], ['code', '&lt;/&gt;', 'Código'], ['link', '[ ]( )', 'Link']];
+function mdFormat(area, kind) {
+  const {selectionStart: a, selectionEnd: b, value} = area, chosen = value.slice(a, b);
+  // insertText keeps the field's own undo; where it is refused, the text goes in directly.
+  const put = (from, to, text, selectFrom, selectTo = selectFrom) => {
+    area.focus();
+    area.setSelectionRange(from, to);
+    if (!document.execCommand?.('insertText', false, text)) { area.setRangeText(text, from, to, 'end'); area.dispatchEvent(new Event('input', {bubbles: true})); }
+    area.setSelectionRange(selectFrom, selectTo);
+  };
+  const prefix = {h: '## ', ul: '- ', task: '- [ ] ', quote: '> '}[kind];
+  if (prefix) {
+    const from = value.lastIndexOf('\n', a - 1) + 1, end = value.indexOf('\n', b), to = end < 0 ? value.length : end;
+    const lines = value.slice(from, to).split('\n'), marked = lines.every(l => l.startsWith(prefix));
+    const text = lines.map(l => marked ? l.slice(prefix.length) : prefix + l).join('\n');
+    return put(from, to, text, from + text.length);
+  }
+  if (kind === 'link') { const label = chosen || 'texto'; return put(a, b, `[${label}](https://)`, a + label.length + 3, a + label.length + 11); }
+  if (kind === 'code' && chosen.includes('\n')) return put(a, b, `\`\`\`\n${chosen}\n\`\`\``, a + 4, a + 4 + chosen.length);
+  const mark = {b: '**', i: '*', code: '`'}[kind];
+  put(a, b, `${mark}${chosen}${mark}`, a + mark.length, a + mark.length + chosen.length);
+}
+
+// Writing a note takes longer than filling a form: leaving with something typed asks first.
+function memoSheet(id) {
+  const m = id ? memoOf(id) : null;
+  if (id && (!m || m.trashed)) return;
+  const base = {title: m?.title || '', body: m?.body || ''};
+  // The parser drops a line break right after <textarea>; the extra one keeps the note's own.
+  openSheet(`<form class="n-form m-form" id="memo-form">${sheetTop(m ? 'Editar nota' : 'Nova nota', 'OK')}
+    <input name="title" maxlength="${MEMO_TITLE_MAX}" placeholder="Título" aria-label="Título" value="${esc(base.title)}" autocomplete="off" ${m ? '' : 'autofocus'}>
+    <div class="m-edit"><div class="m-src"><div class="m-fmt" role="toolbar" aria-label="Formatação">${MD_TOOLS.map(([kind, label, name]) => `<button type="button" data-md="${kind}" data-keep-focus aria-label="${name}" title="${name}">${label}</button>`).join('')}</div>
+      <textarea name="body" maxlength="${MEMO_MAX}" placeholder="Texto em Markdown" aria-label="Texto em Markdown">\n${esc(base.body)}</textarea></div>
+      <div class="m-preview"><p class="m-preview-h">Prévia</p><div class="n-md" data-preview></div></div></div>
+    <p class="n-note" data-left hidden></p>
+  </form>`, dialog => {
+    dialog.classList.add('is-memo');
+    const form = $('#memo-form'), title = form.elements.title, area = form.elements.body, preview = $('[data-preview]', form), left = $('[data-left]', form);
+    const name = () => title.value.trim().replace(/\s+/g, ' '), text = () => area.value.replace(/\r\n?/g, '\n').replace(/\s+$/, '');
+    let drawn = null, frame = 0;
+    const draw = () => {
+      // The preview is beside the text only on a wide window.
+      if (preview.offsetParent && area.value !== drawn) { drawn = area.value; preview.innerHTML = drawn.trim() ? markdown.render(drawn) : '<p class="d-empty">O texto aparece aqui como vai ficar.</p>'; }
+      const room = MEMO_MAX - area.value.length;
+      left.hidden = room > 2000;
+      left.textContent = room > 0 ? `Cabem mais ${room.toLocaleString('pt-BR')} caracteres.` : 'A nota chegou ao limite de tamanho.';
+    };
+    draw();
+    area.addEventListener('input', () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(draw); });
+    form.addEventListener('click', e => { const tool = e.target.closest('[data-md]'); if (tool) mdFormat(area, tool.dataset.md); });
+    form.addEventListener('keydown', e => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      const key = e.key.toLowerCase();
+      if (key === 'enter') { e.preventDefault(); form.requestSubmit(); }
+      else if (e.target === area && (key === 'b' || key === 'i')) { e.preventDefault(); mdFormat(area, key); }
+    });
+    sheetGuard = () => (name() === base.title && text() === base.body) || confirm('Descartar o que você escreveu?');
+    dialog.addEventListener('close', () => { dialog.classList.remove('is-memo'); sheetGuard = null; cancelAnimationFrame(frame); }, {once: true});
+    // On the computer the caret waits at the end of the text; on the phone the keyboard only comes when the text is touched.
+    if (m && desktop()) { area.focus(); area.setSelectionRange(area.value.length, area.value.length); area.scrollTop = area.scrollHeight; }
+    form.onsubmit = e => {
+      e.preventDefault();
+      const t = name(), b = text(), at = Date.now(), now = id ? memoOf(id) : null;
+      const create = () => { const nid = uid(); commit('memos', nid, {title: t, body: b, section: (id ? m.section : memoSection) || '', pinned: false, added: at, edited: at, trashed: 0}); memoId = nid; memoTrash = false; };
+      if (!id) { if (t || b) create(); }
+      // Apagada (or deleted for good) while it was open here: what was typed is not lost.
+      else if (!now || now.trashed) { create(); toast('A nota tinha sido apagada. O que você escreveu ficou numa nota nova.'); }
+      else {
+        // The text changed under the editor (the agent, another device): saving goes over it.
+        const under = (now.body || '') !== base.body;
+        if (under && b !== base.body && !confirm(`${now.agent || 'Outro aparelho'} mudou o texto desta nota enquanto você editava. Gravar o seu por cima?`)) return;
+        const patch = {};
+        if (t !== base.title && t !== (now.title || '')) patch.title = t;
+        if (b !== base.body && b !== (now.body || '')) patch.body = b;
+        if (Object.keys(patch).length) commit('memos', id, {...patch, edited: at});
+      }
+      sheetGuard = null;
+      closeSheet();
+    };
+  });
+}
+
+// On the computer: the list in one column and the note open beside it.
+function deskNotas() {
+  const all = memos(), fresh = all.filter(memoUnseen).length;
+  let current = memoTrash ? null : memoOf(memoId);
+  if (current?.trashed) current = null;
+  // Nothing chosen: the most recent one opens, unless opening it would clear a dot unread.
+  if (!current && !memoTrash) { current = sortMemos(all).filter(m => !memoSection || m.section === memoSection).find(m => !memoUnseen(m)) || null; memoId = current?.id || null; }
+  if (current) markMemoSeen(current);
+  const head = memoTrash ? `<div class="m-col-h"><button class="n-link n-back" data-memo-trash-close>${ICONS.prev}Notas</button><b>Apagadas</b></div><p class="n-note">Depois de ${TRASH_DAYS} dias somem de vez.</p>`
+    : `<input class="m-find" type="search" aria-label="Buscar nas notas" placeholder="Buscar nas notas" value="${esc(memoSearch)}" autocomplete="off" data-memo-search>`;
+  const reader = current ? `<div class="m-read-bar"><p class="m-meta">${memoMeta(current)}</p><span class="m-read-end"><button class="d-tool ${current.pinned ? 'is-on' : ''}" data-pin-memo="${esc(current.id)}" aria-pressed="${!!current.pinned}" aria-label="Fixar" title="${current.pinned ? 'Desafixar' : 'Fixar'}">${ICONS.pin}</button><button class="d-tool" data-edit-memo="${esc(current.id)}">Editar<kbd>↩</kbd></button><button class="d-tool" data-memo-menu="${esc(current.id)}" aria-label="Seção, copiar e apagar" title="Seção, copiar e apagar">${ICONS.more}</button></span></div><div class="m-read-body">${memoArticle(current)}</div>`
+    : `<div class="m-none">${memoTrash ? `<p>O que você ou um agente apagou fica aqui por ${TRASH_DAYS} dias.</p>` : all.length ? '<p>Escolha uma nota na lista.</p>' : '<p>Nenhuma nota ainda.</p><p>Texto livre em Markdown, para o que não é tarefa, conta nem lista.</p><button class="n-btn n-yellow" data-new-memo>Nova nota</button>'}</div>`;
+  return `${toolbar('Notas', `${plural(all.length, 'nota', 'notas')}${fresh ? ` · ${plural(fresh, 'nova', 'novas')}` : ''}`, deskAdd('Nova nota', 'data-new-memo'))}
+    <div class="m-desk"><div class="m-col">${head}<div id="memo-rows">${memoRows()}</div></div><article class="m-read">${statusHtml()}${reader}</article></div>`;
+}
+
 function viewAjustes() {
   const repeats = live(state, 'repeats').length;
   const monthly = repeatingBills(state).length;
@@ -938,7 +1258,7 @@ function viewAjustes() {
       <div class="n-row n-plain"><button class="n-text n-accent" data-new-section>Nova seção</button></div></div>
     <p class="n-note">A ordem aqui é a ordem em Hoje e no Backlog${desktop() ? ' e define a cor de cada seção' : ''}.</p>
     <div class="n-group-h"><h2>Abas</h2></div>
-    <div class="n-list">${[['reunioes', 'Agenda'], ['backlog', 'Backlog'], ['compras', 'Casa'], ['contas', 'Contas']].map(([id, label]) => `<label class="n-row n-plain"><span class="n-text">${label}</span><input type="checkbox" class="n-switch" data-tab-pref="${id}" ${tabPrefs(state)[id] ? 'checked' : ''}></label>`).join('')}</div>
+    <div class="n-list">${[['reunioes', 'Agenda'], ['backlog', 'Backlog'], ['notas', 'Notas'], ['compras', 'Casa'], ['contas', 'Contas']].map(([id, label]) => `<label class="n-row n-plain"><span class="n-text">${label}</span><input type="checkbox" class="n-switch" data-tab-pref="${id}" ${tabPrefs(state)[id] ? 'checked' : ''}></label>`).join('')}</div>
     <p class="n-note">Hoje sempre aparece; Ajustes abre pelo seu nome no topo de Hoje. A Agenda mostra tudo que tem horário; com ela ligada, as reuniões saem do Hoje e ficam só lá.</p>
     <div class="n-group-h"><h2>Repetições</h2></div>
     <div class="n-list">
@@ -998,7 +1318,7 @@ function pageMonthly() {
   return {html: `<div class="n-top"><button class="n-link" data-back>‹ Ajustes</button></div><h1 class="n-title">Contas recorrentes</h1><p class="n-sub">Voltam no ritmo de cada uma, como não pagas.</p>${rows ? `<div class="n-list n-spaced">${rows}</div>` : '<div class="n-empty"><p>Nenhuma conta se repete.</p></div>'}`, action: ''};
 }
 
-const PAGES = {history: pageHistory, repeats: pageRepeats, monthly: pageMonthly, casa: pageCasa};
+const PAGES = {history: pageHistory, repeats: pageRepeats, monthly: pageMonthly, casa: pageCasa, nota: pageMemo, apagadas: pageTrash};
 
 function render() {
   // Replacing the rows mid-drag would cancel the drag; it renders again when it ends.
@@ -1015,13 +1335,17 @@ function render() {
   // Re-rendering replaces the add fields; keep what is being typed and the keyboard open.
   const typing = ['#add-item input', '#add-chore input', '#quick-task input'].map(sel => { const field = $(sel); return field && {sel, value: field.value, focused: document.activeElement === field}; }).filter(Boolean);
   const searching = document.activeElement?.matches('[data-bill-search]');
+  // Notas: the search keeps the caret, and the computer's list column its scroll.
+  const memoFind = document.activeElement?.matches('[data-memo-search]') ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null, memoColTop = $('.m-col')?.scrollTop || 0;
   const stepForm = document.activeElement?.closest?.('[data-add-step]'), stepTyping = stepForm && {id: stepForm.dataset.addStep, value: stepForm.elements.entry.value};
-  if (screen) screen.innerHTML = (wide ? DESK_VIEWS : {hoje: viewHoje, reunioes: viewReunioes, backlog: viewBacklog, compras: viewCasa, contas: viewContas, ajustes: viewAjustes})[tab]();
+  if (screen) screen.innerHTML = (wide ? DESK_VIEWS : {hoje: viewHoje, reunioes: viewReunioes, backlog: viewBacklog, notas: viewNotas, compras: viewCasa, contas: viewContas, ajustes: viewAjustes})[tab]();
   for (const {sel, value, focused} of typing) { const field = $(sel); if (!field) continue; field.value = value; if (focused) field.focus({preventScroll: true}); }
   if ($('#quick-task')) drawQuickChips();
   if (searching) $('[data-bill-search]')?.focus({preventScroll: true});
+  if (memoFind) { const field = $('[data-memo-search]'); if (field) { field.focus({preventScroll: true}); try { field.setSelectionRange(...memoFind); } catch {} } }
+  if (memoColTop && $('.m-col')) $('.m-col').scrollTop = memoColTop;
   if (stepTyping) { const field = $(`[data-add-step="${CSS.escape(stepTyping.id)}"] input`); if (field) { field.value = stepTyping.value; field.focus({preventScroll: true}); } }
-  $('#tabbar').innerHTML = wide ? sidebarHtml() : mainTabs().map(([id, label]) => `<button class="n-tab ${tab === id ? 'is-on' : ''}" data-tab="${id}" ${tab === id ? 'aria-current="page"' : ''}>${tabIcon(id)}<span>${label}</span>${id === 'backlog' && overdue().length ? '<i class="n-tab-dot" aria-label="Há tarefas que ficaram para trás"></i>' : ''}${id === 'compras' && casaUnseen() ? '<i class="n-tab-dot c-tab-dot" aria-label="Novidades na Casa"></i>' : ''}</button>`).join('');
+  $('#tabbar').innerHTML = wide ? sidebarHtml() : mainTabs().map(([id, label]) => `<button class="n-tab ${tab === id ? 'is-on' : ''}" data-tab="${id}" ${tab === id ? 'aria-current="page"' : ''}>${tabIcon(id)}<span>${label}</span>${id === 'backlog' && overdue().length ? '<i class="n-tab-dot" aria-label="Há tarefas que ficaram para trás"></i>' : ''}${id === 'compras' && casaUnseen() ? '<i class="n-tab-dot c-tab-dot" aria-label="Novidades na Casa"></i>' : ''}${id === 'notas' && memosUnseen() ? '<i class="n-tab-dot c-tab-dot" aria-label="Há notas novas"></i>' : ''}</button>`).join('');
   let float = '';
   if (wide) float = tab === 'backlog' && selected.size ? backlogActions() : '';
   else if (tab === 'backlog' && selecting) float = `<button class="n-btn n-yellow n-wide" data-move-selected ${selected.size ? '' : 'disabled'}>${selected.size ? `Mover ${selected.size} para hoje` : 'Selecione tarefas'}</button>`;
@@ -1031,6 +1355,7 @@ function render() {
     float = hojeDate > today() ? `<button class="n-quick" data-new-on-day="${hojeDate}">${ICONS.plus}<span>Nova tarefa</span></button>` : n ? `<button class="n-btn n-yellow n-wide" data-carry-day="${hojeDate}">${n === 1 ? 'Trazer 1 pendente para hoje' : `Trazer ${n} pendentes para hoje`}</button>` : '';
   }
   else if (tab === 'reunioes') float = `<button class="n-quick" data-new-meeting>${ICONS.plus}<span>Nova reunião</span></button>`;
+  else if (tab === 'notas' && (memos().length || trashNow().length)) float = `<button class="n-quick" data-new-memo>${ICONS.plus}<span>Nova nota</span></button>`;
   else if ((tab === 'hoje' && (todayTasks().length || hojeCasaGroup())) || (tab === 'backlog' && (backlog().length || scheduled().length || overdue().length))) float = `<button class="n-quick" data-new-task>${ICONS.plus}<span>Nova tarefa</span></button>`;
   $('#float').innerHTML = float;
   document.body.dataset.float = float ? 'yes' : 'no';
@@ -1047,6 +1372,7 @@ function switchTab(id) {
   if (id === 'hoje') hojeDate = railDate = null;
   // The Casa tab (or its sidebar entry) always opens on the overview.
   if (id === 'compras') casaView = null;
+  if (id === 'notas') memoTrash = false;
   if (id !== tab) { tab = id; selecting = false; selected.clear(); cursor = null; }
   // The sidebar stays visible over secondary pages; choosing an area leaves them.
   if (desktop() && navigation.current !== 'root') navigation.back();
@@ -1078,7 +1404,10 @@ function fitSheet() {
 }
 window.visualViewport?.addEventListener('resize', fitSheet);
 window.visualViewport?.addEventListener('scroll', fitSheet);
-function closeSheet() { if ($('#sheet').open) $('#sheet').close(); }
+// A sheet may ask before closing (the note editor, with something typed); Esc goes the same way.
+let sheetGuard = null;
+function closeSheet() { if ($('#sheet').open && (!sheetGuard || sheetGuard())) $('#sheet').close(); }
+$('#sheet').addEventListener('cancel', e => { if (sheetGuard && !sheetGuard()) e.preventDefault(); });
 const sheetTop = (title, ok = 'Salvar') => `<div class="n-sheet-top"><button type="button" class="n-link" data-close>Cancelar</button><h2 id="sheet-title">${title}</h2>${ok ? `<button class="n-link n-ok">${ok}</button>` : '<span></span>'}</div>`;
 
 function autosize(el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; }
@@ -1907,6 +2236,7 @@ async function logout() {
 
 let suppressClick = false;
 document.addEventListener('input', e => {
+  if (e.target.matches('[data-memo-search]')) { memoSearch = e.target.value; const rows = $('#memo-rows'); if (rows) rows.innerHTML = memoRows(); }
   if (!e.target.matches('[data-bill-search]')) return;
   billSearch = e.target.value;
   $('#all-bill-rows').innerHTML = allBillRows();
@@ -1940,6 +2270,17 @@ document.addEventListener('click', e => {
   else if (d.editList) listSheet(d.editList);
   else if ('newNote' in d) noteSheet();
   else if (d.editNote) noteSheet(d.editNote);
+  else if (d.openMemo) { if (desktop()) b.blur(); openMemo(d.openMemo); }
+  else if ('newMemo' in d) memoSheet();
+  else if (d.editMemo) memoSheet(d.editMemo);
+  else if (d.memoMenu) memoMenuSheet(d.memoMenu);
+  else if (d.pinMemo) commit('memos', d.pinMemo, {pinned: !memoOf(d.pinMemo)?.pinned});
+  else if (d.restoreMemo) restoreMemo(d.restoreMemo);
+  else if ('emptyTrash' in d) emptyTrash();
+  else if ('memoTrashClose' in d) { memoTrash = false; render(); }
+  else if ('memoTrash' in d) { if (desktop()) { memoTrash = true; render(); } else navigation.push('apagadas'); }
+  else if ('memoSection' in d) { memoSection = memoSection === d.memoSection ? '' : d.memoSection; if (desktop()) memoTrash = false; render(); }
+  else if ('mdTask' in d) toggleMemoBox(b);
   else if (d.clearDone) deleteChores(liveChores(state, d.clearDone).filter(c => c.done).map(c => c.id));
   else if (d.editTask && projected(d.editTask)) { const {id, ...fields} = projected(d.editTask); commit('tasks', id, fields).then(() => taskSheet({id})); }
   else if (d.editTask) taskSheet({id: d.editTask});
@@ -2338,10 +2679,16 @@ const mainTabs = () => visibleTabs().filter(([id]) => id !== 'ajustes');
 
 function sidebarHtml() {
   const month = today().slice(0, 7);
-  const counts = {hoje: todayTasks().filter(t => !t.done).length, reunioes: todayMeetings().filter(t => !t.done).length, backlog: backlog().length, compras: forYou().length, contas: live(state, 'bills').filter(b => b.month === month && !b.done).length};
+  const counts = {hoje: todayTasks().filter(t => !t.done).length, reunioes: todayMeetings().filter(t => !t.done).length, backlog: backlog().length, notas: memosUnseen(), compras: forYou().length, contas: live(state, 'bills').filter(b => b.month === month && !b.done).length};
   const nav = mainTabs().map(([id, label], i) => `<button class="d-nav ${tab === id ? 'is-on' : ''}" data-tab="${id}" ${id === 'hoje' ? 'data-drop-today' : ''} ${tab === id ? 'aria-current="page"' : ''} title="${label} (${KEY}${i + 1})">${tabIcon(id)}<span>${label}</span><em>${counts[id] || ''}</em></button>`).join('');
   const pending = live(state, 'tasks').filter(t => !t.done && (t.date === '' || t.date === today()));
-  const secs = sections().map(s => { const n = pending.filter(t => t.section === s.id).length; return `<button class="d-sec" data-find="${esc(s.name)}" title="Buscar em ${esc(s.name)}">${dot(s.id)}<span>${esc(s.name)}</span><em>${n || ''}</em></button>`; }).join('');
+  // In Notas a section filters the notes (and counts them); elsewhere it searches its tasks.
+  const noted = tab === 'notas' ? memos() : null;
+  const secs = sections().map(s => {
+    const n = (noted || pending).filter(t => t.section === s.id).length;
+    return noted ? `<button class="d-sec ${memoSection === s.id ? 'is-on' : ''}" data-memo-section="${esc(s.id)}" aria-pressed="${memoSection === s.id}" title="Só as notas de ${esc(s.name)}">${dot(s.id)}<span>${esc(s.name)}</span><em>${n || ''}</em></button>`
+      : `<button class="d-sec" data-find="${esc(s.name)}" title="Buscar em ${esc(s.name)}">${dot(s.id)}<span>${esc(s.name)}</span><em>${n || ''}</em></button>`;
+  }).join('');
   const sync = needsLogin ? '<button class="d-sync is-off" data-login>Entre para sincronizar</button>'
     : `<span class="d-sync ${online ? '' : 'is-off'}">${!online ? 'Sem conexão' : queue.length ? 'Enviando…' : 'Sincronizado'}</span>`;
   const who = me ? `<span class="n-avatar d-avatar" style="background:${me.color || 'var(--yellow)'}" aria-hidden="true">${esc(me.name[0])}</span><span class="d-who"><b>${esc(me.name)}</b>${sync}</span>` : `<span class="d-who">${sync}</span>`;
@@ -2517,9 +2864,10 @@ function deskCompras() {
 }
 
 const deskAjustes = () => `${toolbar('Ajustes', '')}<div class="d-main d-narrow d-legacy">${viewAjustes()}</div>`;
-const DESK_VIEWS = {hoje: deskHoje, reunioes: deskReunioes, backlog: deskBacklog, compras: deskCasa, contas: deskContas, ajustes: deskAjustes};
+const DESK_VIEWS = {hoje: deskHoje, reunioes: deskReunioes, backlog: deskBacklog, notas: deskNotas, compras: deskCasa, contas: deskContas, ajustes: deskAjustes};
 
 function newTask() {
+  if (tab === 'notas') return memoSheet();
   if (tab === 'compras') { const field = $('#add-chore input, #add-item input'); if (field) field.focus(); else choreSheet(); return; }
   if (tab === 'hoje' && hojeDate) return newTaskOn(hojeDate);
   if (tab === 'hoje' && $('#quick-task input')) return $('#quick-task input').focus();
@@ -2548,6 +2896,7 @@ function finderItems(q) {
     {group: 'Ações', icon: ICONS.plus, text: 'Nova tarefa', hint: 'N', run: () => taskSheet({when: 'today'})},
     prefs.reunioes && {group: 'Ações', icon: ICONS.reunioes, text: 'Nova reunião', run: () => taskSheet({when: 'today', meeting: true})},
     prefs.contas && {group: 'Ações', icon: ICONS.contas, text: 'Nova conta', run: () => billSheet()},
+    prefs.notas && {group: 'Ações', icon: ICONS.notas, text: 'Nova nota', run: () => memoSheet()},
     {group: 'Ações', icon: ICONS.cal, text: 'Calendário', run: () => { historyDate = (tab === 'hoje' && hojeDate) || today(); navigation.push('history'); }},
   ].filter(Boolean);
   if (!key) return [...go, ...actions];
@@ -2561,13 +2910,15 @@ function finderItems(q) {
     ...liveChores(state).filter(c => !c.done).map(c => ({group: 'Casa', icon: ICONS.casa, text: c.text, sub: `${listName(c.list)}${c.date ? ` · ${choreDay(c.date)}` : ''}${shared() ? ` · ${c.who ? personName(c.who) : 'qualquer um'}` : ''}`, run: () => choreSheet({id: c.id})})),
     ...live(state, 'notes').filter(n => n.title || n.body).map(n => ({group: 'Notas fixas', icon: ICONS.casa, text: n.title || n.body.split('\n')[0], sub: n.title ? n.body.replace(/\s*\n\s*/g, ' · ').slice(0, 80) : '', run: () => noteSheet(n.id)})),
   ] : [];
-  return [...go, ...actions, ...tasks, ...repeats, ...bills, ...shop, ...casa].filter(x => itemKey(`${x.text} ${x.sub || ''} ${x.group}`).includes(key)).slice(0, 40);
+  // A note is found by any word of its text; the line that matched takes the place of its start.
+  const notes = prefs.notas ? searchMemos(sortMemos(memos()), q).map(({memo, line}) => ({group: 'Notas', color: memoSectionOf(memo) ? sectionColor(memo.section) : '', icon: ICONS.notas, text: memoTitle(memo), sub: line || memoSnippet(memo, 80), found: true, run: () => openMemo(memo.id)})) : [];
+  return [...go, ...actions, ...tasks, ...repeats, ...bills, ...shop, ...casa, ...notes].filter(x => x.found || itemKey(`${x.text} ${x.sub || ''} ${x.group}`).includes(key)).slice(0, 40);
 }
 function openFinder(q = '') {
   closeMenu();
   finder = {q, i: 0, items: []};
   const el = $('#finder');
-  el.innerHTML = `<div class="d-finder-box" role="dialog" aria-modal="true" aria-label="Buscar"><label class="d-finder-in">${ICONS.search}<input id="finder-q" value="${esc(q)}" placeholder="Buscar tarefas, reuniões, contas e comandos" autocomplete="off" role="combobox" aria-expanded="true" aria-controls="finder-list"><kbd>esc</kbd></label><div class="d-finder-list" id="finder-list" role="listbox"></div><p class="d-finder-foot">↑↓ para escolher · Return para abrir</p></div>`;
+  el.innerHTML = `<div class="d-finder-box" role="dialog" aria-modal="true" aria-label="Buscar"><label class="d-finder-in">${ICONS.search}<input id="finder-q" value="${esc(q)}" placeholder="Buscar tarefas, notas, contas e comandos" autocomplete="off" role="combobox" aria-expanded="true" aria-controls="finder-list"><kbd>esc</kbd></label><div class="d-finder-list" id="finder-list" role="listbox"></div><p class="d-finder-foot">↑↓ para escolher · Return para abrir</p></div>`;
   el.hidden = false;
   drawFinder();
   const input = $('#finder-q'); input.focus(); input.setSelectionRange(q.length, q.length);
@@ -2804,6 +3155,19 @@ document.addEventListener('keydown', e => {
   if (mod || e.altKey) return;
   // Space and Return on a focused button already click it.
   if ((key === ' ' || key === 'Enter') && e.target.closest?.('button, a, label')) return;
+  if (tab === 'notas') {
+    if (memoTrash) return;
+    const ids = $$('#memo-rows [data-open-memo]').map(b => b.dataset.openMemo);
+    if (['j', 'k', 'ArrowDown', 'ArrowUp'].includes(key) && ids.length) {
+      e.preventDefault();
+      const i = ids.indexOf(memoId), down = key === 'j' || key === 'ArrowDown';
+      document.activeElement?.blur?.();
+      openMemo(ids[i < 0 ? 0 : Math.max(0, Math.min(ids.length - 1, i + (down ? 1 : -1)))]);
+      $('.m-row.is-on')?.scrollIntoView({block: 'nearest'});
+    } else if (memoOf(memoId) && key === 'Enter') { e.preventDefault(); memoSheet(memoId); }
+    else if (memoOf(memoId) && (key === 'Backspace' || key === 'Delete')) { e.preventDefault(); trashMemo(memoId); }
+    return;
+  }
   if ((key === 'ArrowLeft' || key === 'ArrowRight') && tab === 'hoje') { e.preventDefault(); shiftHoje(key === 'ArrowLeft' ? -1 : 1); return; }
   if (['j', 'k', 'ArrowDown', 'ArrowUp'].includes(key) && (tab === 'hoje' || tab === 'backlog' || tab === 'reunioes')) {
     const ids = $$('.page[data-name="root"] .n-row[data-row]').map(r => r.dataset.row);

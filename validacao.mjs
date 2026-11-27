@@ -1,6 +1,6 @@
 // What the server accepts as an operation, from the app (POST /api/operations) or from an
 // agent (MCP): the collection, the id, and each field's type and format. Server only.
-import {RESERVED_IDS} from './public/model.js';
+import {RESERVED_IDS, MEMO_MAX, MEMO_TITLE_MAX} from './public/model.js';
 
 const billCalculation = {calcMode: 'string', unitAmount: 'number', weekdays: 'string', starts: 'string', excluded: 'string', lag: 'number'};
 const schema = {
@@ -13,7 +13,7 @@ const schema = {
   days: {date: 'string', reviewed: 'boolean'},
   months: {month: 'string'},
   // prefs.casa.seen: when this person last looked at Casa (ms), for the dot on its tab.
-  prefs: {reunioes: 'boolean', backlog: 'boolean', compras: 'boolean', contas: 'boolean', seen: 'number'},
+  prefs: {reunioes: 'boolean', backlog: 'boolean', notas: 'boolean', compras: 'boolean', contas: 'boolean', seen: 'number'},
   // `cards` is written only by the server, from the finance app.
   cardLinks: {card: 'string'},
   // `bought` (when it went into the cart, ms) comes from the app; `boughtBy` only from the server.
@@ -24,7 +24,11 @@ const schema = {
   // A task's checklist; `task` is the task's origin (see taskSteps in model.js).
   steps: {task: 'string', text: 'string', done: 'boolean', order: 'number', deleted: 'boolean'},
   notes: {title: 'string', body: 'string', order: 'number', added: 'number', by: 'string', edited: 'number', editedBy: 'string', deleted: 'boolean'},
+  // The Notas tab (per person). `added`, `edited`, `agent`, `trashed` and `trashedAgent` are stamped by the server.
+  memos: {title: 'string', body: 'string', section: 'string', pinned: 'boolean', added: 'number', edited: 'number', agent: 'string', seen: 'number', trashed: 'number', trashedAgent: 'string', deleted: 'boolean'},
 };
+// Text fields hold up to 10,000 characters; a note's Markdown holds more.
+const LIMITS = {memos: {body: MEMO_MAX, title: MEMO_TITLE_MAX}};
 // Field formats beyond the type check; time and a meeting's end are optional (empty string).
 const clockTime = v => v === '' || /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
 const formats = {
@@ -53,5 +57,5 @@ export function validate(op) {
   if (op.batchId !== undefined && (typeof op.batchId !== 'string' || op.batchId.length > 100)) return false;
   if (['expectedBill', 'expectedBillRule'].some(k => op[k] !== undefined && (typeof op[k] !== 'string' || op[k].length > 20000 || !['bills', 'billRules'].includes(op.collection)))) return false;
   return Object.entries(op.patch).every(([k, v]) => Object.hasOwn(schema[op.collection], k) && typeof v === schema[op.collection][k]
-    && (typeof v !== 'string' || v.length <= 10000) && (typeof v !== 'number' || (Number.isFinite(v) && v >= 0)) && (!formats[k] || formats[k](v)));
+    && (typeof v !== 'string' || v.length <= (LIMITS[op.collection]?.[k] ?? 10000)) && (typeof v !== 'number' || (Number.isFinite(v) && v >= 0)) && (!formats[k] || formats[k](v)));
 }

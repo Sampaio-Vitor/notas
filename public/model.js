@@ -1,8 +1,9 @@
 // Shared by server and client: state shape, patch application and the
 // daily/monthly rollover. Every change is a patch {collection,id,patch}.
 // The shared space (Casa) holds `shopping`, `lists`, `chores` and `notes`; everything else is per person.
+// `notes` are Casa's pinned notes; `memos` are each person's Markdown notes (the Notas tab).
 export const SHARED_COLLECTIONS = ['shopping', 'lists', 'chores', 'notes'];
-export const COLLECTIONS = ['sections', 'tasks', 'repeats', 'bills', 'billRules', 'days', 'months', 'meetings', 'shopping', 'prefs', 'cards', 'cardLinks', 'lists', 'chores', 'notes', 'steps'];
+export const COLLECTIONS = ['sections', 'tasks', 'repeats', 'bills', 'billRules', 'days', 'months', 'meetings', 'shopping', 'prefs', 'cards', 'cardLinks', 'lists', 'chores', 'notes', 'steps', 'memos'];
 
 export const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 export const weekday = date => new Date(`${date}T12:00:00`).getDay();
@@ -36,7 +37,7 @@ export function apply(state, op) {
 
 // Which optional tabs a person wants (stored per person in prefs.tabs). Hoje and
 // Ajustes always show; Agenda (id `reunioes`, its old name) is off until someone turns it on.
-export const TAB_DEFAULTS = {reunioes: false, backlog: true, compras: true, contas: true};
+export const TAB_DEFAULTS = {reunioes: false, backlog: true, notas: true, compras: true, contas: true};
 export const tabPrefs = state => ({...TAB_DEFAULTS, ...Object.fromEntries(Object.entries(state.prefs?.tabs || {}).filter(([k, v]) => k in TAB_DEFAULTS && typeof v === 'boolean'))});
 
 export const live = (state, collection) => Object.values(state[collection] || {}).filter(x => !x.deleted && !(collection === 'bills' && x.skipped));
@@ -513,4 +514,75 @@ export function parseChore(input, people, me, today) {
     if (found) { date = found; text = text.slice(0, word.index) + ' ' + text.slice(word.index + word[0].length); break; }
   }
   return {text: text.replace(/\s+/g, ' ').trim(), ...(who !== undefined ? {who} : {}), ...(date ? {date} : {})};
+}
+
+// ---------- Notas (memos) ----------
+// A person's Markdown notes: a title, the Markdown `body`, an optional section (the tasks'
+// sections) and `pinned`. `edited` is when the text last changed and `agent` the agent that
+// wrote it (empty when the person did); `seen` is when the person last opened it. Apagar sets
+// `trashed` (when) instead of `deleted`, because a deleted record never comes back: the note
+// waits TRASH_DAYS in Apagadas, where it can be recovered, and only then is deleted for good.
+export const MEMO_MAX = 50000, MEMO_TITLE_MAX = 200, TRASH_DAYS = 30;
+const trashLimit = now => now - TRASH_DAYS * 864e5;
+export const liveMemos = state => live(state, 'memos').filter(m => !m.trashed);
+export const trashedMemos = (state, now) => live(state, 'memos').filter(m => m.trashed > trashLimit(now)).sort((a, b) => b.trashed - a.trashed);
+export const memoStamp = m => m.edited || m.added || 0;
+// Pinned first, then the most recently written.
+export const sortMemos = list => [...list].sort((a, b) => !!b.pinned - !!a.pinned || memoStamp(b) - memoStamp(a));
+// Written by an agent since the person last opened it.
+export const memoUnseen = m => !!m.agent && !m.trashed && (m.edited || 0) > (m.seen || 0);
+// A deleted note keeps its record (so a late change cannot bring it back), but not its text.
+export const memoGone = {deleted: true, title: '', body: ''};
+export const memoPurgeOps = (state, now) => live(state, 'memos').filter(m => m.trashed && m.trashed <= trashLimit(now)).map(m => ({collection: 'memos', id: m.id, patch: memoGone}));
+
+// A line of Markdown as plain text, for a list row or a title: no heading, list, quote or
+// emphasis marks, and a link by its text.
+const plainLine = line => line.replace(/^\s*(?:>\s*)*(?:#{1,6}\s+|(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?)?/, '')
+  .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/(\*\*|__|~~|`)/g, '').replace(/(^|\s)[*_](\S)/g, '$1$2').replace(/(\S)[*_](?=\s|[.,;:!?)]|$)/g, '$1').trim();
+const tableRow = line => /^\s*\|/.test(line) ? line.replace(/^\s*\||\|\s*$/g, '').replace(/\s*\|\s*/g, ' · ') : line;
+const proseLines = body => String(body || '').split('\n').filter(l => !/^\s*(```|~~~|\|?\s*:?-{3,}|[-*_]{3,}\s*$)/.test(l)).map(l => plainLine(tableRow(l))).filter(Boolean);
+// A note without a title is called by its first line; the preview then starts on the second.
+export const memoTitle = m => m.title || proseLines(m.body)[0]?.slice(0, MEMO_TITLE_MAX) || 'Sem título';
+export function memoSnippet(m, max = 140) {
+  const text = proseLines(m.body).slice(m.title ? 0 : 1).join(' · ');
+  return text.length > max ? `${text.slice(0, max - 1).replace(/[\s·]+$/, '')}…` : text;
+}
+
+// Task lines ("- [ ] comprar", "1. [x] feito"), outside code blocks: their line numbers and marks.
+const TASK_LINE = /^(\s*(?:>\s*)*(?:[-*+]|\d+[.)])\s+\[)([ xX])(\](?:\s|$))/;
+function taskLines(body) {
+  const found = [];
+  let fence = '';
+  String(body || '').split('\n').forEach((line, i) => {
+    const f = /^\s*(```|~~~)/.exec(line)?.[1];
+    if (f) { fence = fence ? (f === fence ? '' : fence) : f; return; }
+    const m = !fence && TASK_LINE.exec(line);
+    if (m) found.push({line: i, done: m[2] !== ' '});
+  });
+  return found;
+}
+// Ticking a box is not writing the note: the text is the same once every box is emptied.
+const unticked = body => String(body || '').split('\n').map(l => l.replace(TASK_LINE, '$1 $3')).join('\n');
+export const memoTickOnly = (before, after) => before !== after && unticked(before) === unticked(after);
+export const memoTasks = body => { const list = taskLines(body); return {total: list.length, done: list.filter(t => t.done).length}; };
+// The body with the task on that line (0-based) checked or unchecked; null when it is not a task line.
+export function toggleMemoTask(body, line) {
+  const lines = String(body || '').split('\n'), task = taskLines(body).find(t => t.line === line);
+  if (!task) return null;
+  lines[line] = lines[line].replace(TASK_LINE, (_, a, mark, b) => `${a}${mark === ' ' ? 'x' : ' '}${b}`);
+  return lines.join('\n');
+}
+// The notes whose title or text has every word of the search (accents and case do not matter),
+// each with the line where the first word shows up.
+export function searchMemos(list, query) {
+  const words = itemKey(query).split(' ').filter(Boolean);
+  if (!words.length) return list.map(m => ({memo: m, line: ''}));
+  const found = [];
+  for (const m of list) {
+    const text = itemKey(`${m.title || ''} ${m.body || ''}`);
+    if (!words.every(w => text.includes(w))) continue;
+    const line = String(m.body || '').split('\n').find(l => itemKey(l).includes(words[0])) || '';
+    found.push({memo: m, line: plainLine(tableRow(line)).slice(0, 200)});
+  }
+  return found;
 }
