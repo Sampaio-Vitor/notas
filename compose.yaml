@@ -10,8 +10,11 @@ services:
       APP_USERS: ${APP_USERS:-}
       # Alternativa com uma pessoa só.
       APP_PASSWORD: ${APP_PASSWORD:-}
-      # Agentes no /mcp, só com a lista de compras: id:token, separados por vírgula.
+      # Agentes no /mcp: id:token (só a lista de compras) ou id:token:pessoa (também as tarefas,
+      # as contas e as notas dessa pessoa), separados por vírgula.
       MCP_TOKENS: ${MCP_TOKENS:-}
+      # Como cada agente aparece no app (opcional): id:Nome, separados por vírgula.
+      MCP_AGENT_NAMES: ${MCP_AGENT_NAMES:-}
       # Faturas de cartão do app de finanças, pela rede notas-financas (vazio = desligado).
       FINANCE_URL: ${FINANCE_URL:-}
       FINANCE_TOKEN: ${FINANCE_TOKEN:-}

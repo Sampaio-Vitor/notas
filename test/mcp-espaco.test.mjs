@@ -31,7 +31,7 @@ function estado() {
 const roda = (s, name, args = {}, hoje = HOJE, agente = 'robo') => spaceTool(s, name, args, hoje, novoId, agente);
 
 test('ferramentas: nomes e esquemas', () => {
-  assert.deepEqual(SPACE_TOOLS.map(t => t.name), ['tarefas_dia', 'tarefas_backlog', 'tarefa_criar', 'tarefa_editar', 'tarefa_concluir', 'tarefa_mover', 'contas_mes', 'contas_proximas']);
+  assert.deepEqual(SPACE_TOOLS.map(t => t.name), ['tarefas_dia', 'tarefas_backlog', 'tarefa_criar', 'tarefa_editar', 'tarefa_concluir', 'tarefa_mover', 'contas_mes', 'contas_proximas', 'notas_listar', 'nota_ler', 'nota_criar', 'nota_editar', 'nota_apagar']);
   for (const t of SPACE_TOOLS) assert.equal(t.inputSchema.type, 'object');
 });
 

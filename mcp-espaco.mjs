@@ -1,8 +1,8 @@
-// MCP tools that reach one person's space: tasks and bills. Only for an agent whose token names
+// MCP tools that reach one person's space: tasks, bills and notes. Only for an agent whose token names
 // the space (MCP_TOKENS="robo:<token>:ana"); the space comes from the token, never from an
 // argument. Pure functions: the state goes in, the result and the operations to commit come out.
 import {createHash} from 'node:crypto';
-import {live, sortedSections, origin, occurrenceId, repeatsOn, weekday, toMinutes, fromMinutes, overdueTasks, scheduledTasks, itemKey, linkedCard, tasksForDay, meetingEnd, shiftMonth, own, RESERVED_IDS, billDueDate, monthBills, taskSteps, taskDoneOps} from './public/model.js';
+import {live, sortedSections, origin, occurrenceId, repeatsOn, weekday, toMinutes, fromMinutes, overdueTasks, scheduledTasks, itemKey, linkedCard, tasksForDay, meetingEnd, shiftMonth, own, RESERVED_IDS, billDueDate, monthBills, taskSteps, taskDoneOps, liveMemos, sortMemos, searchMemos, memoTitle, memoStamp, MEMO_MAX, MEMO_TITLE_MAX, TRASH_DAYS} from './public/model.js';
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/, MONTH = /^\d{4}-(0[1-9]|1[0-2])$/, TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 const money = n => new Intl.NumberFormat('pt-BR', {style: 'currency', currency: 'BRL'}).format((n || 0) / 100).replace(/ /g, ' ');
@@ -18,6 +18,8 @@ const fimArg = {type: 'string', description: 'HH:MM, depois do horario; só com 
 const reuniaoArg = {type: 'boolean', description: 'true: é uma reunião (aparece na Agenda do app). Só com dia.'};
 const RULES = ['diaria', 'dias_uteis', 'semanal', 'quinzenal', 'mensal'];
 const WEEKDAYS = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sab'];
+const notaIdArg = {type: 'string', minLength: 1, maxLength: 200, description: 'O id que notas_listar devolveu.'};
+const notaSecaoArg = {type: 'string', maxLength: 100, description: 'Nome de uma seção, as mesmas das tarefas (maiúsculas e acentos não importam). "" é sem seção.'};
 const repetirArg = stop => ({type: 'object', description: `Repetição. regra: diaria (todo dia), dias_uteis (seg a sex), semanal (nos "dias"), quinzenal (a cada 2 semanas, nos "dias", contando da primeira ocorrência), mensal (no "dia_do_mes")${stop ? ' ou nao (para de repetir)' : ''}. Sem "dias", o dia da semana da tarefa; sem "dia_do_mes", o dia do mês dela. Ex.: {"regra": "semanal", "dias": ["seg", "qua"]}.`,
   properties: {regra: {type: 'string', enum: stop ? [...RULES, 'nao'] : RULES}, dias: {type: 'array', items: {type: 'string', enum: WEEKDAYS}, minItems: 1, maxItems: 7}, dia_do_mes: {type: 'integer', minimum: 1, maximum: 31}}, required: ['regra']});
 export const SPACE_TOOLS = [
@@ -49,6 +51,24 @@ export const SPACE_TOOLS = [
   {name: 'contas_proximas', title: 'Contas que vencem logo',
     description: 'As contas não pagas que vencem nos próximos dias (padrão 7, até 60), incluindo as atrasadas, da mais antiga para a mais nova. vence_em é a data (dia 31 num mês de 30 dias vence no dia 30). Conta sem dia de vencimento vence no último dia do mês dela e, como no app, nunca sai como atrasada.',
     inputSchema: {type: 'object', properties: {dias: {type: 'integer', minimum: 1, maximum: 60}}}, annotations: {readOnlyHint: true}},
+  {name: 'notas_listar', title: 'Notas',
+    description: 'As notas da aba Notas do app: texto livre em Markdown, para o que não é tarefa, conta nem lista. Devolve id, titulo, secao, fixada, editada_em (ISO 8601), tamanho (caracteres do texto) e por (o agente que escreveu por último; ausente quando foi a pessoa), das fixadas para as demais e da edição mais recente para a mais antiga. Não traz o texto: use nota_ler. "busca" fica com as notas que têm todas as palavras no título ou no texto (acentos e maiúsculas não importam) e traz o trecho encontrado; "secao" filtra pelo nome da seção ("" para as sem seção).',
+    inputSchema: {type: 'object', properties: {busca: {type: 'string', maxLength: 200}, secao: {type: 'string', maxLength: 100}}}, annotations: {readOnlyHint: true}},
+  {name: 'nota_ler', title: 'Ler nota',
+    description: 'O texto inteiro de uma nota, em Markdown, com titulo, secao, fixada, criada_em e editada_em. Leia antes de editar com "trocar".',
+    inputSchema: {type: 'object', properties: {id: notaIdArg}, required: ['id']}, annotations: {readOnlyHint: true}},
+  {name: 'nota_criar', title: 'Criar nota',
+    description: 'Cria uma nota em Markdown: títulos, listas, "- [ ]" para caixas de marcar, tabelas, citações, código e links. HTML não é interpretado e imagem aparece como link. "titulo" é o nome na lista; não o repita como título dentro do texto. "secao" (opcional) é uma seção das tarefas; se não existir, o erro traz as seções. "fixada" a deixa no topo. "chave" (opcional) evita duplicar: repetir a chamada com a mesma chave devolve a nota já criada, com repetida. Para algo com dia para fazer, use tarefa_criar.',
+    inputSchema: {type: 'object', properties: {titulo: {type: 'string', minLength: 1, maxLength: MEMO_TITLE_MAX}, texto: {type: 'string', maxLength: MEMO_MAX, description: 'Markdown.'}, secao: notaSecaoArg, fixada: {type: 'boolean'}, chave: {type: 'string', minLength: 1, maxLength: 200}}, required: ['titulo']},
+    annotations: {readOnlyHint: false, destructiveHint: false}},
+  {name: 'nota_editar', title: 'Editar nota',
+    description: 'Muda uma nota pelo id que notas_listar devolveu. Só os campos enviados mudam. Para o texto, mande um destes três: "acrescentar" (põe no fim, numa linha nova), "trocar" ({"de": trecho exato que está na nota, "para": o novo}; falha se "de" não aparece exatamente uma vez, então mande um trecho maior) ou "texto" (troca o texto inteiro; só quando a nota toda muda, porque apaga o que estava lá, inclusive o que a pessoa escreveu). Também "titulo", "secao" ("" tira a seção) e "fixada".',
+    inputSchema: {type: 'object', properties: {id: notaIdArg, titulo: {type: 'string', minLength: 1, maxLength: MEMO_TITLE_MAX}, texto: {type: 'string', maxLength: MEMO_MAX, description: 'O texto inteiro, em Markdown.'}, acrescentar: {type: 'string', minLength: 1, maxLength: MEMO_MAX}, trocar: {type: 'object', properties: {de: {type: 'string', minLength: 1, maxLength: MEMO_MAX}, para: {type: 'string', maxLength: MEMO_MAX}}, required: ['de', 'para']}, secao: notaSecaoArg, fixada: {type: 'boolean'}}, required: ['id']},
+    annotations: {readOnlyHint: false, destructiveHint: true}},
+  {name: 'nota_apagar', title: 'Apagar nota',
+    description: `Manda uma nota para Apagadas, onde a pessoa pode recuperá-la no app por ${TRASH_DAYS} dias; depois disso ela some de vez. Devolve o título, para dizer o que foi apagado.`,
+    inputSchema: {type: 'object', properties: {id: notaIdArg}, required: ['id']},
+    annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true}},
 ];
 export const SPACE_TOOL_NAMES = new Set(SPACE_TOOLS.map(t => t.name));
 
@@ -126,6 +146,116 @@ function endFor(time, fim) {
   return fim || meetingEnd({time});
 }
 
+// ----- Notas -----
+const LIST_MAX = 100;
+const isoTime = ms => ms ? new Date(ms).toISOString() : null;
+// `por` is the agent that wrote the text last; a note the person wrote has none.
+const memoOut = (state, m, by = m.agent) => ({id: m.id, titulo: memoTitle(m), secao: liveSection(state, m.section)?.name || null, fixada: !!m.pinned, editada_em: isoTime(memoStamp(m)), ...(by ? {por: by} : {}), tamanho: (m.body || '').length});
+// A note in Apagadas is not found by its id, except to say that it is there.
+function findMemo(state, id, trashed = false) {
+  if (typeof id !== 'string' || !id) throw Error('id da nota faltando');
+  const m = RESERVED_IDS.includes(id) ? undefined : own(state.memos, id);
+  if (!m || m.deleted) throw Error('nota não encontrada; peça a lista de novo (notas_listar)');
+  if (m.trashed && !trashed) throw Error(`a nota "${memoTitle(m)}" foi apagada; ela fica em Apagadas no app, onde a pessoa pode recuperá-la`);
+  return {...m, id};
+}
+// A note may have no section: "" (or nothing, when creating) is none.
+function memoSectionId(state, name) {
+  if (typeof name !== 'string') throw Error('secao deve ser o nome de uma seção, ou "" para nenhuma');
+  if (!name.trim()) return '';
+  const section = sortedSections(state).find(s => itemKey(s.name) === itemKey(name));
+  if (!section) throw Error(`a seção "${name}" não existe; as seções são: ${sectionNames(state).join(', ')}`);
+  return section.id;
+}
+const memoTitleArg = value => {
+  const title = typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
+  if (!title || title.length > MEMO_TITLE_MAX) throw Error(`titulo deve ter de 1 a ${MEMO_TITLE_MAX} caracteres`);
+  return title;
+};
+const lines = text => text.replace(/\r\n?/g, '\n');
+function memoText(value, field) {
+  if (typeof value !== 'string') throw Error(`${field} deve ser um texto em Markdown`);
+  return lines(value).replace(/\s+$/, '');
+}
+function fits(body) {
+  if (body.length > MEMO_MAX) throw Error(`a nota ficaria com ${body.length} caracteres; o limite é ${MEMO_MAX}`);
+  return body;
+}
+const flag = (value, field) => { if (typeof value !== 'boolean') throw Error(`${field} deve ser true ou false`); return value; };
+
+function memoTool(state, name, args, newId, agent, now) {
+  if (name === 'notas_listar') {
+    if (args.busca !== undefined && typeof args.busca !== 'string') throw Error('busca deve ser um texto');
+    let list = sortMemos(liveMemos(state));
+    if (args.secao !== undefined) { const section = memoSectionId(state, args.secao); list = list.filter(m => (liveSection(state, m.section)?.id || '') === section); }
+    const found = searchMemos(list, args.busca || '');
+    return {result: {notas: found.slice(0, LIST_MAX).map(({memo, line}) => ({...memoOut(state, memo), ...(line ? {trecho: line} : {})})),
+      ...(found.length > LIST_MAX ? {nao_listadas: found.length - LIST_MAX, dica: 'use busca ou secao para ver as outras'} : {})}, ops: []};
+  }
+  if (name === 'nota_ler') {
+    const m = findMemo(state, args.id);
+    return {result: {...memoOut(state, m), criada_em: isoTime(m.added), texto: m.body || ''}, ops: []};
+  }
+  if (name === 'nota_criar') {
+    const title = memoTitleArg(args.titulo);
+    const body = fits(args.texto === undefined ? '' : memoText(args.texto, 'texto'));
+    const section = args.secao === undefined ? '' : memoSectionId(state, args.secao);
+    const pinned = args.fixada === undefined ? false : flag(args.fixada, 'fixada');
+    let id;
+    if (args.chave !== undefined) {
+      if (typeof args.chave !== 'string' || !args.chave.trim() || args.chave.length > 200) throw Error('chave deve ter de 1 a 200 caracteres');
+      id = keyedId(agent, args.chave);
+      const before = own(state.memos, id);
+      if (before) {
+        // A deleted note has no title left to compare.
+        if (!before.deleted && (before.title || '') !== title) throw Error(`a chave "${args.chave}" já foi usada na nota "${memoTitle(before)}"; se esta é outra nota, use uma chave nova`);
+        return {result: {...memoOut(state, {...before, id}), repetida: true, ...(before.deleted || before.trashed ? {apagada: true} : {})}, ops: []};
+      }
+    } else id = newId();
+    const patch = {title, body, section, pinned, added: now, edited: now, trashed: 0};
+    return {result: memoOut(state, {...patch, id}, ''), ops: [{collection: 'memos', id, patch}]};
+  }
+  if (name === 'nota_editar') {
+    const m = findMemo(state, args.id);
+    const given = k => args[k] !== undefined && args[k] !== null;
+    if (!['titulo', 'texto', 'acrescentar', 'trocar', 'secao', 'fixada'].some(given)) throw Error('nada para mudar: mande titulo, texto, acrescentar, trocar, secao ou fixada');
+    const modes = ['texto', 'acrescentar', 'trocar'].filter(given);
+    if (modes.length > 1) throw Error(`mande só um de texto, acrescentar ou trocar (vieram ${modes.join(' e ')})`);
+    const patch = {};
+    if (given('titulo')) { const title = memoTitleArg(args.titulo); if (title !== (m.title || '')) patch.title = title; }
+    let body = m.body || '';
+    if (modes[0] === 'texto') body = memoText(args.texto, 'texto');
+    if (modes[0] === 'acrescentar') {
+      const more = memoText(args.acrescentar, 'acrescentar');
+      if (!more.trim()) throw Error('acrescentar está vazio');
+      body = body ? `${body}\n${more}` : more.replace(/^\n+/, '');
+    }
+    if (modes[0] === 'trocar') {
+      const t = args.trocar;
+      if (typeof t !== 'object' || Array.isArray(t) || typeof t.de !== 'string' || typeof t.para !== 'string') throw Error('trocar deve ser {"de": "trecho que está na nota", "para": "o novo trecho"}');
+      const from = lines(t.de), to = lines(t.para);
+      if (!from) throw Error('trocar.de está vazio');
+      const count = body.split(from).length - 1;
+      if (!count) throw Error('o trecho em trocar.de não está na nota (precisa ser igual, com os mesmos espaços e quebras de linha); leia a nota de novo com nota_ler');
+      if (count > 1) throw Error(`o trecho em trocar.de aparece ${count} vezes na nota; mande um trecho maior, que apareça uma vez só`);
+      body = body.replace(from, () => to).replace(/\s+$/, '');
+    }
+    if (fits(body) !== (m.body || '')) patch.body = body;
+    if (given('secao')) { const section = memoSectionId(state, args.secao); if (section !== (liveSection(state, m.section)?.id || '')) patch.section = section; }
+    if (given('fixada') && flag(args.fixada, 'fixada') !== !!m.pinned) patch.pinned = args.fixada;
+    const wrote = 'title' in patch || 'body' in patch;
+    if (wrote) patch.edited = now;
+    const out = memoOut(state, {...m, ...patch}, wrote ? '' : m.agent);
+    return {result: out, ops: Object.keys(patch).length ? [{collection: 'memos', id: m.id, patch}] : []};
+  }
+  if (name === 'nota_apagar') {
+    const m = findMemo(state, args.id, true), out = {id: m.id, titulo: memoTitle(m), apagada: true};
+    if (m.trashed) return {result: out, ops: []};
+    return {result: {...out, dias_para_recuperar: TRASH_DAYS}, ops: [{collection: 'memos', id: m.id, patch: {trashed: now}}]};
+  }
+  return null;
+}
+
 // The rule's fields in a repeat (the app's form: days as weekday digits, Sunday 0; weeks 2 for
 // every other week, counted from the first occurrence on a chosen day; monthDay for monthly).
 function repeatRule(arg, date) {
@@ -181,7 +311,9 @@ function createdRepeat(state, rid, template, date) {
 }
 const liveRepeat = (state, id) => { const r = own(state.repeats, id); return r && !r.deleted ? r : undefined; };
 
-export function spaceTool(state, name, args, today, newId, agent = '') {
+export function spaceTool(state, name, args, today, newId, agent = '', now = Date.now()) {
+  const memo = memoTool(state, name, args, newId, agent, now);
+  if (memo) return memo;
   if (name === 'tarefas_dia') {
     const date = args.data === undefined ? today : String(args.data);
     if (!validDate(date)) throw Error('data deve ser AAAA-MM-DD');

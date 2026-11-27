@@ -181,10 +181,10 @@ test('ocorrência de uma repetição marcada como reunião herda a marca', () =>
 
 test('abas opcionais: padrão e escolhas da pessoa', () => {
   const s = initialState();
-  assert.deepEqual(tabPrefs(s), {reunioes: false, backlog: true, compras: true, contas: true});
+  assert.deepEqual(tabPrefs(s), {reunioes: false, backlog: true, notas: true, compras: true, contas: true});
   apply(s, {collection: 'prefs', id: 'tabs', patch: {reunioes: true}});
   apply(s, {collection: 'prefs', id: 'tabs', patch: {contas: false}});
-  assert.deepEqual(tabPrefs(s), {reunioes: true, backlog: true, compras: true, contas: false});
+  assert.deepEqual(tabPrefs(s), {reunioes: true, backlog: true, notas: true, compras: true, contas: false});
   s.prefs.tabs.backlog = 'sim';
   assert.equal(tabPrefs(s).backlog, true);
 });
